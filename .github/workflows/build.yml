@@ -38,7 +38,7 @@ jobs:
     - name: Upload Debug APK
       uses: actions/upload-artifact@v4
       with:
-        name: gesture-recognition-debug
+        name: gesture-recognition-debug-${{ github.run_number }}
         path: app/build/outputs/apk/debug/app-debug.apk
         retention-days: 30
 
@@ -50,25 +50,6 @@ jobs:
       uses: actions/upload-artifact@v4
       if: success()
       with:
-        name: gesture-recognition-release
-        path: app/build/outputs/apk/release/app-release-unsigned.apk
-        retention-days: 30
-
-    - name: Upload Debug APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: gesture-recognition-debug
-        path: app/build/outputs/apk/debug/app-debug.apk
-        retention-days: 30
-
-    - name: Build Release APK (unsigned)
-      run: ./gradlew assembleRelease --stacktrace
-      continue-on-error: true
-
-    - name: Upload Release APK
-      uses: actions/upload-artifact@v4
-      if: success()
-      with:
-        name: gesture-recognition-release
+        name: gesture-recognition-release-${{ github.run_number }}
         path: app/build/outputs/apk/release/app-release-unsigned.apk
         retention-days: 30
