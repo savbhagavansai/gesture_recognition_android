@@ -23,30 +23,29 @@ jobs:
         
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v3
-      
+      with:
+        gradle-version: 8.2
+
+    - name: Generate Gradle Wrapper
+      run: gradle wrapper --gradle-version 8.2
+
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
-      
-    - name: Download Gradle Wrapper
-      run: |
-        if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
-          curl -L -o gradle/wrapper/gradle-wrapper.jar https://raw.githubusercontent.com/gradle/gradle/v8.2.0/gradle/wrapper/gradle-wrapper.jar
-        fi
-      
+
     - name: Build Debug APK
       run: ./gradlew assembleDebug --stacktrace
-      
+
     - name: Upload Debug APK
       uses: actions/upload-artifact@v4
       with:
         name: gesture-recognition-debug
         path: app/build/outputs/apk/debug/app-debug.apk
         retention-days: 30
-        
+
     - name: Build Release APK (unsigned)
       run: ./gradlew assembleRelease --stacktrace
       continue-on-error: true
-      
+
     - name: Upload Release APK
       uses: actions/upload-artifact@v4
       if: success()
@@ -54,18 +53,18 @@ jobs:
         name: gesture-recognition-release
         path: app/build/outputs/apk/release/app-release-unsigned.apk
         retention-days: 30
-      
+
     - name: Upload Debug APK
       uses: actions/upload-artifact@v4
       with:
         name: gesture-recognition-debug
         path: app/build/outputs/apk/debug/app-debug.apk
         retention-days: 30
-        
+
     - name: Build Release APK (unsigned)
       run: ./gradlew assembleRelease --stacktrace
       continue-on-error: true
-      
+
     - name: Upload Release APK
       uses: actions/upload-artifact@v4
       if: success()
