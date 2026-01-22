@@ -162,17 +162,25 @@ class ONNXInference(context: Context) {
     /**
      * Get model input shape
      */
-    fun getInputShape(): LongArray? {
-        return ortSession?.inputInfo?.get(inputName)?.info?.shape
+    fun getInputShape(): String? {
+        return try {
+            ortSession?.inputInfo?.get(inputName)?.info?.toString()
+        } catch (e: Exception) {
+            null
+        }
     }
-    
+
     /**
      * Get model output shape
      */
-    fun getOutputShape(): LongArray? {
-        return ortSession?.outputInfo?.get(outputName)?.info?.shape
+    fun getOutputShape(): String? {
+        return try {
+            ortSession?.outputInfo?.get(outputName)?.info?.toString()
+        } catch (e: Exception) {
+            null
+        }
     }
-    
+
     /**
      * Release resources
      */
