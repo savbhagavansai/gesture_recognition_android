@@ -5,7 +5,7 @@ import android.graphics.Bitmap
 import android.util.Log
 
 /**
- * Gesture recognizer with rolling buffer and continuous predictions
+ * Gesture recognizer with rolling buffer, continuous predictions, and rotation support
  * Matches Python predict.py behavior exactly
  */
 class GestureRecognizer(context: Context) {
@@ -42,14 +42,19 @@ class GestureRecognizer(context: Context) {
      * - Only clears buffer after multiple missed frames
      *
      * @param bitmap Input frame
+     * @param rotation Image rotation in degrees (0, 90, 180, 270)
      * @param mirrorHorizontal Whether to mirror landmarks (for front camera)
      */
-    fun processFrame(bitmap: Bitmap, mirrorHorizontal: Boolean = false): GestureResult? {
+    fun processFrame(
+        bitmap: Bitmap,
+        rotation: Int = 0,
+        mirrorHorizontal: Boolean = false
+    ): GestureResult? {
         frameCount++
 
         try {
-            // Step 1: Extract landmarks
-            val landmarks = mediaPipeProcessor.extractLandmarks(bitmap, mirrorHorizontal)
+            // Step 1: Extract landmarks with rotation and mirroring
+            val landmarks = mediaPipeProcessor.extractLandmarks(bitmap, rotation, mirrorHorizontal)
 
             if (landmarks == null) {
                 // Hand not detected

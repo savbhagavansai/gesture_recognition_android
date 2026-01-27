@@ -189,12 +189,19 @@ class MainActivity : AppCompatActivity() {
         frameCount++
 
         try {
+            // Get image rotation from CameraX
+            val imageRotation = imageProxy.imageInfo.rotationDegrees
+
             val bitmap = imageProxy.toBitmap()
 
             if (bitmap != null) {
                 lifecycleScope.launch(Dispatchers.Default) {
-                    // Process frame with mirroring for front camera
-                    val result = gestureRecognizer?.processFrame(bitmap, useFrontCamera)
+                    // Process frame with rotation and mirroring
+                    val result = gestureRecognizer?.processFrame(
+                        bitmap,
+                        imageRotation,
+                        useFrontCamera
+                    )
 
                     // Get landmarks for overlay
                     currentLandmarks = gestureRecognizer?.getLastLandmarks()
