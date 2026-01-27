@@ -32,65 +32,124 @@ class ONNXInference(context: Context) {
         try {
             Log.d(TAG, "Loading ONNX model: ${Config.ONNX_MODEL_FILENAME}")
             
-            // Create session options
-            val sessionOptions = OrtSession.SessionOptions()
+            // Strategy 1: Try loading from external storage first (better for external data)
+            val modelFile = copyAssetToFile(context, Config.ONNX_MODEL_FILENAME)
 
-            // Copy model files to cache directory (needed for external data)
-            val modelFile = copyAssetToCache(context, Config.ONNX_MODEL_FILENAME)
+            // Check for external data file
+            val dataFileName = "${Config.ONNX_MODEL_FILENAME}.data"
+            var dataFile: java.io.File? = null
 
-            // Check if external data file exists and copy it
-            val dataFileName = Config.ONNX_MODEL_FILENAME + ".data"
             try {
-                context.assets.open(dataFileName).use {
-                    Log.d(TAG, "External data file found: $dataFileName")
-                    copyAssetToCache(context, dataFileName)
+                context.assets.list("")?.let { assetList ->
+                    if (assetList.contains(dataFileName)) {
+                        Log.d(TAG, "Found external data file: $dataFileName")
+                        dataFile = copyAssetToFile(context, dataFileName)
+                    }
                 }
             } catch (e: Exception) {
-                Log.d(TAG, "No external data file (this is OK if model is small)")
+                Log.d(TAG, "No external data file")
             }
 
-            Log.d(TAG, "Model file copied to: ${modelFile.absolutePath}")
+            Log.d(TAG, "Model file: ${modelFile.absolutePath} (${modelFile.length()} bytes)")
+            if (dataFile != null) {
+                Log.d(TAG, "Data file: ${dataFile?.absolutePath} (${dataFile?.length()} bytes)")
+            }
 
-            // Create ONNX session from file path (handles external data automatically)
-            ortSession = ortEnvironment.createSession(
-                modelFile.absolutePath,
-                sessionOptions
-            )
+            // Create session options with optimization
+            val sessionOptions = OrtSession.SessionOptions()
+            sessionOptions.setIntraOpNumThreads(2)
+            sessionOptions.setInterOpNumThreads(2)
+
+            // Try loading the model
+            Log.d(TAG, "Creating ONNX session...")
+
+            try {
+                // Load from file path (handles external data automatically if in same dir)
+                ortSession = ortEnvironment.createSession(
+                    modelFile.absolutePath,
+                    sessionOptions
+                )
+                Log.d(TAG, "✓ Session created from file path")
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to load from file path, trying byte array fallback", e)
+
+                // Fallback: Try loading as byte array (only works for single-file models)
+                try {
+                    val modelBytes = context.assets.open(Config.ONNX_MODEL_FILENAME).use {
+                        it.readBytes()
+                    }
+                    ortSession = ortEnvironment.createSession(modelBytes, sessionOptions)
+                    Log.d(TAG, "✓ Session created from byte array")
+                } catch (e2: Exception) {
+                    Log.e(TAG, "Both loading strategies failed", e2)
+                    throw e2
+                }
+            }
 
             // Get input/output names
             inputName = ortSession?.inputNames?.iterator()?.next()
             outputName = ortSession?.outputNames?.iterator()?.next()
 
-            Log.d(TAG, "ONNX session created successfully")
-            Log.d(TAG, "Input name: $inputName")
-            Log.d(TAG, "Output name: $outputName")
+            Log.d(TAG, "✓ ONNX model loaded successfully")
+            Log.d(TAG, "  Input: $inputName")
+            Log.d(TAG, "  Output: $outputName")
 
-            // Log input shape
-            ortSession?.inputInfo?.get(inputName)?.info?.let { info ->
-                Log.d(TAG, "Input info: ${info}")
+            // Log model info
+            ortSession?.inputInfo?.get(inputName)?.let { inputInfo ->
+                Log.d(TAG, "  Input info: ${inputInfo.info}")
             }
 
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to load ONNX model", e)
-            throw RuntimeException("Failed to load ONNX model: ${e.message}", e)
+            val errorMsg = "Failed to load ONNX model: Error code - ${e.javaClass.simpleName} - message: ${e.message}"
+            Log.e(TAG, errorMsg, e)
+
+            // Log full stack trace for debugging
+            e.printStackTrace()
+
+            throw RuntimeException(errorMsg, e)
         }
     }
 
     /**
-     * Copy asset file to cache directory
+     * Copy asset file to internal storage (better for external data models)
      */
-    private fun copyAssetToCache(context: Context, assetName: String): java.io.File {
-        val cacheFile = java.io.File(context.cacheDir, assetName)
-
-        // Copy from assets to cache
-        context.assets.open(assetName).use { inputStream ->
-            cacheFile.outputStream().use { outputStream ->
-                inputStream.copyTo(outputStream)
-            }
+    private fun copyAssetToFile(context: Context, assetName: String): java.io.File {
+        // Use files dir instead of cache (more reliable for external data)
+        val filesDir = java.io.File(context.filesDir, "models")
+        if (!filesDir.exists()) {
+            filesDir.mkdirs()
+            Log.d(TAG, "Created models directory: ${filesDir.absolutePath}")
         }
 
-        Log.d(TAG, "Copied $assetName to cache (${cacheFile.length()} bytes)")
-        return cacheFile
+        val targetFile = java.io.File(filesDir, assetName)
+
+        // Delete if exists to ensure fresh copy
+        if (targetFile.exists()) {
+            targetFile.delete()
+            Log.d(TAG, "Deleted existing file: $assetName")
+        }
+
+        // Copy from assets
+        try {
+            context.assets.open(assetName).use { inputStream ->
+                targetFile.outputStream().use { outputStream ->
+                    val bytesWritten = inputStream.copyTo(outputStream)
+                    outputStream.flush()
+                    Log.d(TAG, "Copied $assetName: $bytesWritten bytes")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to copy asset: $assetName", e)
+            throw RuntimeException("Failed to copy asset $assetName: ${e.message}", e)
+        }
+
+        // Verify file was created
+        if (!targetFile.exists() || targetFile.length() == 0L) {
+            throw RuntimeException("Failed to create valid file: $assetName")
+        }
+
+        return targetFile
     }
 
     /**
@@ -138,9 +197,12 @@ class ONNXInference(context: Context) {
             // Run inference
             val results = session.run(mapOf(input to inputTensor))
 
-            // Get output tensor
+            // Get output tensor (logits)
             val outputTensor = results[0].value as Array<*>
-            val probabilities = (outputTensor[0] as FloatArray)
+            val logits = (outputTensor[0] as FloatArray)
+
+            // Apply softmax to convert logits to probabilities
+            val probabilities = applySoftmax(logits)
 
             // Find predicted class (argmax)
             var maxIdx = 0
@@ -189,6 +251,31 @@ class ONNXInference(context: Context) {
         val gestureName = Config.IDX_TO_LABEL[predictedIdx] ?: "unknown"
 
         return Triple(gestureName, confidence, probabilities)
+    }
+
+    /**
+     * Apply softmax to convert logits to probabilities
+     */
+    private fun applySoftmax(logits: FloatArray): FloatArray {
+        // Find max for numerical stability
+        val maxLogit = logits.maxOrNull() ?: 0f
+
+        // Compute exp(logit - max)
+        val expValues = FloatArray(logits.size)
+        var sumExp = 0f
+
+        for (i in logits.indices) {
+            expValues[i] = kotlin.math.exp(logits[i] - maxLogit)
+            sumExp += expValues[i]
+        }
+
+        // Normalize
+        val probabilities = FloatArray(logits.size)
+        for (i in logits.indices) {
+            probabilities[i] = expValues[i] / sumExp
+        }
+
+        return probabilities
     }
 
     /**

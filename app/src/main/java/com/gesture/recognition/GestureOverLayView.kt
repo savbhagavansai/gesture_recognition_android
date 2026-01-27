@@ -132,15 +132,13 @@ class GestureOverlayView @JvmOverloads constructor(
         val viewWidth = width.toFloat()
         val viewHeight = height.toFloat()
 
-        // Scale landmarks to view coordinates
-        val scaleX = viewWidth / imageWidth
-        val scaleY = viewHeight / imageHeight
-
-        // Extract points
+        // MediaPipe landmarks are already normalized (0.0 to 1.0)
+        // Just scale directly to view dimensions
         val points = mutableListOf<Pair<Float, Float>>()
         for (i in 0 until 21) {
-            val x = lm[i * 3] * imageWidth * scaleX
-            val y = lm[i * 3 + 1] * imageHeight * scaleY
+            // Landmarks: [x, y, z] where x, y are in [0, 1] range
+            val x = lm[i * 3] * viewWidth
+            val y = lm[i * 3 + 1] * viewHeight
             points.add(Pair(x, y))
         }
 
