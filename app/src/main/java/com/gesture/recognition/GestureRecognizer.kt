@@ -3,172 +3,167 @@ package com.gesture.recognition
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
+import com.google.mediapipe.framework.image.BitmapImageBuilder
+import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.vision.core.RunningMode
+import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
+import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
 
 /**
- * Gesture recognizer with rolling buffer and continuous predictions
- * Matches Python predict.py behavior exactly
+ * MediaPipe Hands processor for hand landmark detection
+ * Extracts 21 landmarks (x, y, z) per hand
  */
-class GestureRecognizer(context: Context) {
+class MediaPipeProcessor(context: Context) {
 
-    private val TAG = "GestureRecognizer"
+    private val TAG = "MediaPipeProcessor"
 
-    // Core components
-    private val mediaPipeProcessor: MediaPipeProcessor
-    private val onnxInference: ONNXInference
-    private val sequenceBuffer: SequenceBuffer
-    private val predictionSmoother: PredictionSmoother
-
-    // State tracking
-    private var frameCount = 0
-    private var lastLandmarks: FloatArray? = null
-    private var missedFrameCount = 0
-    private val maxMissedFrames = 3  // Clear buffer after 3 missed frames
+    private var handLandmarker: HandLandmarker? = null
 
     init {
-        Log.d(TAG, "Initializing GestureRecognizer...")
-
-        mediaPipeProcessor = MediaPipeProcessor(context)
-        onnxInference = ONNXInference(context)
-        sequenceBuffer = SequenceBuffer()
-        predictionSmoother = PredictionSmoother()
-
-        Log.d(TAG, "GestureRecognizer initialized successfully")
+        initializeMediaPipe(context)
     }
 
     /**
-     * Process a frame - CONTINUOUS MODE (like Python)
-     * - Rolling buffer (always maintains last 15 frames)
-     * - Predicts EVERY frame once buffer >= 15
-     * - Only clears buffer after multiple missed frames
+     * Initialize MediaPipe HandLandmarker
      */
-    fun processFrame(bitmap: Bitmap): GestureResult? {
-        frameCount++
+    private fun initializeMediaPipe(context: Context) {
+        try {
+            Log.d(TAG, "Initializing MediaPipe HandLandmarker...")
 
-        // Step 1: Extract landmarks
-        val landmarks = mediaPipeProcessor.extractLandmarks(bitmap)
+            val baseOptions = BaseOptions.builder()
+                .setModelAssetPath("hand_landmarker.task")
+                .build()
 
-        if (landmarks == null) {
-            // Hand not detected
-            missedFrameCount++
-            lastLandmarks = null
+            val options = HandLandmarker.HandLandmarkerOptions.builder()
+                .setBaseOptions(baseOptions)
+                .setRunningMode(RunningMode.IMAGE)
+                .setNumHands(1)  // Track only one hand
+                .setMinHandDetectionConfidence(Config.MP_HANDS_CONFIDENCE)
+                .setMinTrackingConfidence(Config.MP_HANDS_TRACKING_CONFIDENCE)
+                .build()
 
-            // Only clear buffer after multiple missed frames (like Python)
-            if (missedFrameCount > maxMissedFrames) {
-                if (sequenceBuffer.size() > 0) {
-                    sequenceBuffer.clear()
-                    predictionSmoother.clear()
-                    Log.d(TAG, "Buffer cleared after $missedFrameCount missed frames")
-                }
+            handLandmarker = HandLandmarker.createFromOptions(context, options)
+
+            Log.d(TAG, "MediaPipe initialized successfully")
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize MediaPipe", e)
+            throw RuntimeException("Failed to initialize MediaPipe: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Extract hand landmarks from bitmap
+     *
+     * @param bitmap Input image
+     * @param mirrorHorizontal Whether to mirror X coordinates (for front camera)
+     * @return FloatArray of 63 values (21 landmarks × 3 coords) or null if no hand detected
+     */
+    fun extractLandmarks(bitmap: Bitmap, mirrorHorizontal: Boolean = false): FloatArray? {
+        val landmarker = handLandmarker ?: run {
+            Log.e(TAG, "HandLandmarker not initialized")
+            return null
+        }
+
+        try {
+            // Convert bitmap to MediaPipe image
+            val mpImage = BitmapImageBuilder(bitmap).build()
+
+            // Detect hands
+            val result: HandLandmarkerResult = landmarker.detect(mpImage)
+
+            // Check if hand detected
+            if (result.landmarks().isEmpty()) {
+                return null
             }
 
-            return GestureResult(
-                gesture = "No hand detected",
-                confidence = 0f,
-                allProbabilities = FloatArray(Config.NUM_CLASSES),
-                handDetected = false,
-                bufferProgress = 0f
-            )
+            // Get first hand landmarks
+            val handLandmarks = result.landmarks()[0]
+
+            if (handLandmarks.size != 21) {
+                Log.w(TAG, "Expected 21 landmarks, got ${handLandmarks.size}")
+                return null
+            }
+
+            // Extract x, y, z coordinates
+            val landmarks = FloatArray(63)
+            var idx = 0
+
+            for (landmark in handLandmarks) {
+                // Mirror X coordinate for front camera (to match display)
+                val x = if (mirrorHorizontal) 1.0f - landmark.x() else landmark.x()
+
+                landmarks[idx++] = x
+                landmarks[idx++] = landmark.y()
+                landmarks[idx++] = landmark.z()
+            }
+
+            return landmarks
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Landmark extraction failed", e)
+            return null
         }
-
-        // Hand detected - reset missed frame counter
-        missedFrameCount = 0
-        lastLandmarks = landmarks
-
-        // Step 2: Normalize landmarks
-        val normalized = LandmarkNormalizer.normalize(landmarks)
-
-        // Step 3: Add to rolling buffer
-        sequenceBuffer.add(normalized)
-
-        // Step 4: Check if buffer is ready for prediction
-        val currentBufferSize = sequenceBuffer.size()
-
-        if (currentBufferSize < Config.SEQUENCE_LENGTH) {
-            // Still collecting frames
-            return GestureResult(
-                gesture = "Collecting frames...",
-                confidence = 0f,
-                allProbabilities = FloatArray(Config.NUM_CLASSES),
-                handDetected = true,
-                bufferProgress = currentBufferSize.toFloat() / Config.SEQUENCE_LENGTH.toFloat()
-            )
-        }
-
-        // Step 5: Buffer is full - run prediction EVERY FRAME (continuous)
-        val sequence = sequenceBuffer.getSequence() ?: return null
-
-        val prediction = onnxInference.predictWithConfidence(sequence)
-
-        if (prediction == null) {
-            Log.w(TAG, "Prediction returned null")
-            return GestureResult(
-                gesture = "Prediction failed",
-                confidence = 0f,
-                allProbabilities = FloatArray(Config.NUM_CLASSES),
-                handDetected = true,
-                bufferProgress = 1f
-            )
-        }
-
-        val (gestureName, confidence, probabilities) = prediction
-
-        // Step 6: Apply smoothing
-        val gestureIdx = Config.LABEL_TO_IDX[gestureName] ?: 0
-        predictionSmoother.addPrediction(gestureIdx)
-
-        val smoothedIdx = predictionSmoother.getSmoothedPrediction()
-        val smoothedGesture = if (smoothedIdx != null) {
-            Config.IDX_TO_LABEL[smoothedIdx] ?: gestureName
-        } else {
-            gestureName
-        }
-
-        return GestureResult(
-            gesture = smoothedGesture,
-            confidence = confidence,
-            allProbabilities = probabilities,
-            handDetected = true,
-            bufferProgress = 1f,
-            isStable = predictionSmoother.isStable()
-        )
     }
 
     /**
-     * Get last detected landmarks (for overlay drawing)
+     * Extract landmarks with additional metadata
+     *
+     * @param bitmap Input image
+     * @return Triple of (landmarks, handedness, confidence) or null
      */
-    fun getLastLandmarks(): FloatArray? {
-        return lastLandmarks
+    fun extractLandmarksWithMetadata(bitmap: Bitmap): Triple<FloatArray, String, Float>? {
+        val landmarker = handLandmarker ?: return null
+
+        try {
+            val mpImage = BitmapImageBuilder(bitmap).build()
+            val result = landmarker.detect(mpImage)
+
+            if (result.landmarks().isEmpty()) {
+                return null
+            }
+
+            // Extract landmarks
+            val handLandmarks = result.landmarks()[0]
+            val landmarks = FloatArray(63)
+            var idx = 0
+
+            for (landmark in handLandmarks) {
+                landmarks[idx++] = landmark.x()
+                landmarks[idx++] = landmark.y()
+                landmarks[idx++] = landmark.z()
+            }
+
+            // Get handedness (Left/Right)
+            val handedness = if (result.handednesses().isNotEmpty()) {
+                result.handednesses()[0][0].categoryName()
+            } else {
+                "Unknown"
+            }
+
+            // Get confidence
+            val confidence = if (result.handednesses().isNotEmpty()) {
+                result.handednesses()[0][0].score()
+            } else {
+                0f
+            }
+
+            return Triple(landmarks, handedness, confidence)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Landmark extraction with metadata failed", e)
+            return null
+        }
     }
 
     /**
-     * Get current buffer size
+     * Check if hand is detected in image
+     *
+     * @param bitmap Input image
+     * @return True if hand detected
      */
-    fun getBufferSize(): Int {
-        return sequenceBuffer.size()
-    }
-
-    /**
-     * Reset recognizer
-     */
-    fun reset() {
-        sequenceBuffer.clear()
-        predictionSmoother.clear()
-        frameCount = 0
-        lastLandmarks = null
-        missedFrameCount = 0
-        Log.d(TAG, "GestureRecognizer reset")
-    }
-
-    /**
-     * Get state info for debugging
-     */
-    fun getStateInfo(): String {
-        return """
-            Frame: $frameCount
-            Buffer: ${sequenceBuffer.size()}/${Config.SEQUENCE_LENGTH}
-            Missed frames: $missedFrameCount
-            Stable: ${predictionSmoother.isStable()}
-        """.trimIndent()
+    fun isHandDetected(bitmap: Bitmap): Boolean {
+        return extractLandmarks(bitmap) != null
     }
 
     /**
@@ -176,11 +171,10 @@ class GestureRecognizer(context: Context) {
      */
     fun close() {
         try {
-            mediaPipeProcessor.close()
-            onnxInference.close()
-            Log.d(TAG, "GestureRecognizer resources released")
+            handLandmarker?.close()
+            Log.d(TAG, "MediaPipe resources released")
         } catch (e: Exception) {
-            Log.e(TAG, "Error releasing resources", e)
+            Log.e(TAG, "Error releasing MediaPipe resources", e)
         }
     }
 }

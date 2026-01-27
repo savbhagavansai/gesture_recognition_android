@@ -193,8 +193,8 @@ class MainActivity : AppCompatActivity() {
 
             if (bitmap != null) {
                 lifecycleScope.launch(Dispatchers.Default) {
-                    // Process frame
-                    val result = gestureRecognizer?.processFrame(bitmap)
+                    // Process frame with mirroring for front camera
+                    val result = gestureRecognizer?.processFrame(bitmap, useFrontCamera)
 
                     // Get landmarks for overlay
                     currentLandmarks = gestureRecognizer?.getLastLandmarks()
