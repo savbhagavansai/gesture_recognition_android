@@ -23,12 +23,12 @@ object Config {
     const val NUM_CLASSES = 11      // Number of gesture classes
     
     // ==================== MODEL FILE ====================
-    const val ONNX_MODEL_FILENAME = "gesture_model.onnx"
-    
+    const val ONNX_MODEL_FILENAME = "gesture_model_android.onnx"
+
     // ==================== INFERENCE PARAMETERS ====================
     const val CONFIDENCE_THRESHOLD = 0.6f  // Minimum confidence for prediction
     const val PREDICTION_SMOOTHING_WINDOW = 5  // Last N predictions for smoothing
-    
+
     // ==================== LABEL MAPPING ====================
     val LABEL_TO_IDX = mapOf(
         "doing_other_things" to 0,
@@ -43,9 +43,9 @@ object Config {
         "stop_sign" to 9,
         "heart" to 10
     )
-    
+
     val IDX_TO_LABEL = LABEL_TO_IDX.entries.associate { (k, v) -> v to k }
-    
+
     // ==================== UI COLORS ====================
     object Colors {
         const val SUCCESS = 0xFF00FF00.toInt()      // Green
@@ -55,12 +55,12 @@ object Config {
         const val BACKGROUND = 0xFF000000.toInt()   // Black
         const val ORANGE = 0xFFFFA500.toInt()       // Orange
     }
-    
+
     // ==================== CAMERA PARAMETERS ====================
     const val CAMERA_WIDTH = 1280
     const val CAMERA_HEIGHT = 720
     const val CAMERA_FPS = 30
-    
+
     // ==================== FPS TRACKING ====================
     const val FPS_BUFFER_SIZE = 30  // Average FPS over last 30 frames
 }
