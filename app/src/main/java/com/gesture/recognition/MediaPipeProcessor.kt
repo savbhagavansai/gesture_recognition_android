@@ -30,7 +30,6 @@ class MediaPipeProcessor(context: Context) {
                 .setMinHandDetectionConfidence(Config.MP_HANDS_CONFIDENCE)
                 .setMinTrackingConfidence(Config.MP_HANDS_TRACKING_CONFIDENCE)
                 .setNumHands(2)  // Detect up to 2 hands
-                .setRunningMode(HandLandmarker.RUNNING_MODE_IMAGE)
                 .build()
 
             // Create HandLandmarker
