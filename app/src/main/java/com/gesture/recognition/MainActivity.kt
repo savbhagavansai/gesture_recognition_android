@@ -2,15 +2,10 @@ package com.gesture.recognition
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Color
-import android.graphics.ImageFormat
-import android.graphics.Rect
-import android.graphics.YuvImage
+import android.graphics.*
 import android.os.Bundle
 import android.util.Log
-import android.widget.TextView
+import android.view.MotionEvent
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -32,14 +27,12 @@ class MainActivity : AppCompatActivity() {
 
     // UI Components
     private lateinit var previewView: PreviewView
-    private lateinit var gestureTextView: TextView
-    private lateinit var confidenceTextView: TextView
-    private lateinit var fpsTextView: TextView
-    private lateinit var statusTextView: TextView
+    private lateinit var overlayView: GestureOverlayView
 
     // Camera
     private var cameraProvider: ProcessCameraProvider? = null
     private var cameraExecutor: ExecutorService? = null
+    private var useFrontCamera = true  // Start with front camera for tablets
 
     // Gesture Recognition
     private var gestureRecognizer: GestureRecognizer? = null
@@ -48,6 +41,9 @@ class MainActivity : AppCompatActivity() {
     private val fpsBuffer = mutableListOf<Long>()
     private var lastFrameTime = System.currentTimeMillis()
     private var frameCount = 0
+
+    // Hand tracking state
+    private var currentLandmarks: FloatArray? = null
 
     // Permission launcher
     private val requestPermissionLauncher = registerForActivityResult(
@@ -98,10 +94,34 @@ class MainActivity : AppCompatActivity() {
 
     private fun initializeViews() {
         previewView = findViewById(R.id.previewView)
-        gestureTextView = findViewById(R.id.gestureTextView)
-        confidenceTextView = findViewById(R.id.confidenceTextView)
-        fpsTextView = findViewById(R.id.fpsTextView)
-        statusTextView = findViewById(R.id.statusTextView)
+        overlayView = findViewById(R.id.overlayView)
+
+        // Double tap to switch camera
+        var lastTapTime = 0L
+        overlayView.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_DOWN) {
+                val currentTime = System.currentTimeMillis()
+                if (currentTime - lastTapTime < 300) {
+                    // Double tap detected
+                    switchCamera()
+                }
+                lastTapTime = currentTime
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    private fun switchCamera() {
+        useFrontCamera = !useFrontCamera
+        cameraProvider?.unbindAll()
+        startCamera()
+        Toast.makeText(
+            this,
+            if (useFrontCamera) "Front Camera" else "Back Camera",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     private fun startCamera() {
@@ -123,13 +143,17 @@ class MainActivity : AppCompatActivity() {
 
         provider.unbindAll()
 
+        // Preview - 640x480 for better performance
         val preview = Preview.Builder()
+            .setTargetResolution(android.util.Size(640, 480))
             .build()
             .also {
                 it.setSurfaceProvider(previewView.surfaceProvider)
             }
 
+        // Image analysis
         val imageAnalyzer = ImageAnalysis.Builder()
+            .setTargetResolution(android.util.Size(640, 480))
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also {
@@ -138,7 +162,12 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-        val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+        // Select camera
+        val cameraSelector = if (useFrontCamera) {
+            CameraSelector.DEFAULT_FRONT_CAMERA
+        } else {
+            CameraSelector.DEFAULT_BACK_CAMERA
+        }
 
         try {
             provider.bindToLifecycle(
@@ -148,7 +177,7 @@ class MainActivity : AppCompatActivity() {
                 imageAnalyzer
             )
 
-            Log.d(TAG, "Camera bound successfully")
+            Log.d(TAG, "Camera bound: ${if (useFrontCamera) "Front" else "Back"}")
 
         } catch (e: Exception) {
             Log.e(TAG, "Use case binding failed", e)
@@ -164,11 +193,18 @@ class MainActivity : AppCompatActivity() {
 
             if (bitmap != null) {
                 lifecycleScope.launch(Dispatchers.Default) {
+                    // Process frame
                     val result = gestureRecognizer?.processFrame(bitmap)
+
+                    // Get landmarks for overlay
+                    currentLandmarks = gestureRecognizer?.getLastLandmarks()
+
+                    // Calculate FPS
                     val fps = calculateFPS(currentTime)
 
+                    // Update UI
                     withContext(Dispatchers.Main) {
-                        updateUI(result, fps)
+                        updateOverlay(result, fps, imageProxy.width, imageProxy.height)
                     }
                 }
             }
@@ -181,25 +217,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun ImageProxy.toBitmap(): Bitmap? {
-        val yBuffer = planes[0].buffer
-        val uBuffer = planes[1].buffer
-        val vBuffer = planes[2].buffer
+        return try {
+            val yBuffer = planes[0].buffer
+            val uBuffer = planes[1].buffer
+            val vBuffer = planes[2].buffer
 
-        val ySize = yBuffer.remaining()
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
+            val ySize = yBuffer.remaining()
+            val uSize = uBuffer.remaining()
+            val vSize = vBuffer.remaining()
 
-        val nv21 = ByteArray(ySize + uSize + vSize)
+            val nv21 = ByteArray(ySize + uSize + vSize)
 
-        yBuffer.get(nv21, 0, ySize)
-        vBuffer.get(nv21, ySize, vSize)
-        uBuffer.get(nv21, ySize + vSize, uSize)
+            yBuffer.get(nv21, 0, ySize)
+            vBuffer.get(nv21, ySize, vSize)
+            uBuffer.get(nv21, ySize + vSize, uSize)
 
-        val yuvImage = YuvImage(nv21, ImageFormat.NV21, this.width, this.height, null)
-        val out = ByteArrayOutputStream()
-        yuvImage.compressToJpeg(Rect(0, 0, yuvImage.width, yuvImage.height), 100, out)
-        val imageBytes = out.toByteArray()
-        return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+            val yuvImage = YuvImage(nv21, ImageFormat.NV21, this.width, this.height, null)
+            val out = ByteArrayOutputStream()
+            yuvImage.compressToJpeg(Rect(0, 0, yuvImage.width, yuvImage.height), 100, out)
+            val imageBytes = out.toByteArray()
+            BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+        } catch (e: Exception) {
+            Log.e(TAG, "Bitmap conversion failed", e)
+            null
+        }
     }
 
     private fun calculateFPS(currentTime: Long): Float {
@@ -222,41 +263,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateUI(result: GestureResult?, fps: Float) {
-        if (result == null) {
-            gestureTextView.text = "No hand detected"
-            gestureTextView.setTextColor(Color.GRAY)
-            confidenceTextView.text = ""
-            statusTextView.text = "Waiting for hand..."
-            fpsTextView.text = String.format("FPS: %.1f", fps)
-            return
-        }
-
-        if (result.meetsThreshold()) {
-            gestureTextView.text = result.getFormattedGesture()
-            gestureTextView.setTextColor(
-                if (result.confidence > 0.8f) Color.GREEN
-                else if (result.confidence > 0.6f) Color.YELLOW
-                else Color.rgb(255, 165, 0)
-            )
-
-            confidenceTextView.text = String.format("%.1f%%", result.confidence * 100)
-            statusTextView.text = if (result.isStable) "✓ Stable" else "Processing..."
-
-        } else {
-            if (result.bufferProgress < 1f) {
-                gestureTextView.text = "Collecting frames..."
-                val progress = (result.bufferProgress * 100).toInt()
-                confidenceTextView.text = "$progress%"
-            } else {
-                gestureTextView.text = "Low confidence"
-                confidenceTextView.text = String.format("%.1f%%", result.confidence * 100)
-            }
-            gestureTextView.setTextColor(Color.GRAY)
-            statusTextView.text = "Move hand clearly"
-        }
-
-        fpsTextView.text = String.format("FPS: %.1f | Frame: %d", fps, frameCount)
+    private fun updateOverlay(result: GestureResult?, fps: Float, imageWidth: Int, imageHeight: Int) {
+        overlayView.updateData(
+            result = result,
+            landmarks = currentLandmarks,
+            fps = fps,
+            frameCount = frameCount,
+            bufferSize = gestureRecognizer?.getBufferSize() ?: 0,
+            handDetected = currentLandmarks != null,
+            imageWidth = imageWidth,
+            imageHeight = imageHeight
+        )
     }
 
     override fun onDestroy() {

@@ -5,96 +5,124 @@ import android.graphics.Bitmap
 import android.util.Log
 
 /**
- * Main gesture recognition orchestrator
- * Combines MediaPipe, normalization, buffering, and ONNX inference
+ * Gesture recognizer with rolling buffer and continuous predictions
+ * Matches Python predict.py behavior exactly
  */
 class GestureRecognizer(context: Context) {
-    
+
     private val TAG = "GestureRecognizer"
-    
+
     // Core components
     private val mediaPipeProcessor: MediaPipeProcessor
     private val onnxInference: ONNXInference
     private val sequenceBuffer: SequenceBuffer
     private val predictionSmoother: PredictionSmoother
-    
+
     // State tracking
     private var frameCount = 0
-    private var lastGesture: String? = null
-    private var lastConfidence: Float = 0f
-    
+    private var lastLandmarks: FloatArray? = null
+    private var missedFrameCount = 0
+    private val maxMissedFrames = 3  // Clear buffer after 3 missed frames
+
     init {
         Log.d(TAG, "Initializing GestureRecognizer...")
-        
+
         mediaPipeProcessor = MediaPipeProcessor(context)
         onnxInference = ONNXInference(context)
         sequenceBuffer = SequenceBuffer()
         predictionSmoother = PredictionSmoother()
-        
+
         Log.d(TAG, "GestureRecognizer initialized successfully")
     }
-    
+
     /**
-     * Process a single frame
-     * 
-     * @param bitmap Input frame
-     * @return GestureResult or null if no prediction
+     * Process a frame - CONTINUOUS MODE (like Python)
+     * - Rolling buffer (always maintains last 15 frames)
+     * - Predicts EVERY frame once buffer >= 15
+     * - Only clears buffer after multiple missed frames
      */
     fun processFrame(bitmap: Bitmap): GestureResult? {
         frameCount++
-        
+
         // Step 1: Extract landmarks
         val landmarks = mediaPipeProcessor.extractLandmarks(bitmap)
-        
+
         if (landmarks == null) {
-            // No hand detected - clear buffer
-            if (sequenceBuffer.size() > 0) {
-                sequenceBuffer.clear()
-                predictionSmoother.clear()
-                Log.d(TAG, "Hand lost - buffers cleared")
+            // Hand not detected
+            missedFrameCount++
+            lastLandmarks = null
+
+            // Only clear buffer after multiple missed frames (like Python)
+            if (missedFrameCount > maxMissedFrames) {
+                if (sequenceBuffer.size() > 0) {
+                    sequenceBuffer.clear()
+                    predictionSmoother.clear()
+                    Log.d(TAG, "Buffer cleared after $missedFrameCount missed frames")
+                }
             }
-            return null
+
+            return GestureResult(
+                gesture = "No hand detected",
+                confidence = 0f,
+                allProbabilities = FloatArray(Config.NUM_CLASSES),
+                handDetected = false,
+                bufferProgress = 0f
+            )
         }
-        
+
+        // Hand detected - reset missed frame counter
+        missedFrameCount = 0
+        lastLandmarks = landmarks
+
         // Step 2: Normalize landmarks
         val normalized = LandmarkNormalizer.normalize(landmarks)
-        
-        // Step 3: Add to sequence buffer
+
+        // Step 3: Add to rolling buffer
         sequenceBuffer.add(normalized)
-        
-        // Step 4: Run inference if buffer is full
-        if (!sequenceBuffer.isFull()) {
+
+        // Step 4: Check if buffer is ready for prediction
+        val currentBufferSize = sequenceBuffer.size()
+
+        if (currentBufferSize < Config.SEQUENCE_LENGTH) {
+            // Still collecting frames
             return GestureResult(
                 gesture = "Collecting frames...",
                 confidence = 0f,
                 allProbabilities = FloatArray(Config.NUM_CLASSES),
                 handDetected = true,
-                bufferProgress = sequenceBuffer.size().toFloat() / Config.SEQUENCE_LENGTH.toFloat()
+                bufferProgress = currentBufferSize.toFloat() / Config.SEQUENCE_LENGTH.toFloat()
             )
         }
-        
+
+        // Step 5: Buffer is full - run prediction EVERY FRAME (continuous)
         val sequence = sequenceBuffer.getSequence() ?: return null
-        
-        // Step 5: Run inference
-        val prediction = onnxInference.predictWithConfidence(sequence) ?: return null
-        
+
+        val prediction = onnxInference.predictWithConfidence(sequence)
+
+        if (prediction == null) {
+            Log.w(TAG, "Prediction returned null")
+            return GestureResult(
+                gesture = "Prediction failed",
+                confidence = 0f,
+                allProbabilities = FloatArray(Config.NUM_CLASSES),
+                handDetected = true,
+                bufferProgress = 1f
+            )
+        }
+
         val (gestureName, confidence, probabilities) = prediction
-        
+
         // Step 6: Apply smoothing
         val gestureIdx = Config.LABEL_TO_IDX[gestureName] ?: 0
         predictionSmoother.addPrediction(gestureIdx)
-        
+
         val smoothedIdx = predictionSmoother.getSmoothedPrediction()
         val smoothedGesture = if (smoothedIdx != null) {
             Config.IDX_TO_LABEL[smoothedIdx] ?: gestureName
         } else {
             gestureName
         }
-        
-        // Update state
-        lastGesture = smoothedGesture
-        lastConfidence = confidence
-        
+
         return GestureResult(
             gesture = smoothedGesture,
             confidence = confidence,
@@ -104,32 +132,45 @@ class GestureRecognizer(context: Context) {
             isStable = predictionSmoother.isStable()
         )
     }
-    
+
     /**
-     * Reset all buffers
+     * Get last detected landmarks (for overlay drawing)
+     */
+    fun getLastLandmarks(): FloatArray? {
+        return lastLandmarks
+    }
+
+    /**
+     * Get current buffer size
+     */
+    fun getBufferSize(): Int {
+        return sequenceBuffer.size()
+    }
+
+    /**
+     * Reset recognizer
      */
     fun reset() {
         sequenceBuffer.clear()
         predictionSmoother.clear()
         frameCount = 0
-        lastGesture = null
-        lastConfidence = 0f
+        lastLandmarks = null
+        missedFrameCount = 0
         Log.d(TAG, "GestureRecognizer reset")
     }
-    
+
     /**
-     * Get current state info
+     * Get state info for debugging
      */
     fun getStateInfo(): String {
         return """
             Frame: $frameCount
             Buffer: ${sequenceBuffer.size()}/${Config.SEQUENCE_LENGTH}
-            Last Gesture: ${lastGesture ?: "None"}
-            Confidence: ${String.format("%.1f%%", lastConfidence * 100)}
+            Missed frames: $missedFrameCount
             Stable: ${predictionSmoother.isStable()}
         """.trimIndent()
     }
-    
+
     /**
      * Release resources
      */
@@ -141,74 +182,5 @@ class GestureRecognizer(context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing resources", e)
         }
-    }
-}
-
-/**
- * Result of gesture recognition
- */
-data class GestureResult(
-    val gesture: String,
-    val confidence: Float,
-    val allProbabilities: FloatArray,
-    val handDetected: Boolean,
-    val bufferProgress: Float = 1f,
-    val isStable: Boolean = false
-) {
-    
-    /**
-     * Get formatted gesture name
-     */
-    fun getFormattedGesture(): String {
-        return gesture.replace('_', ' ')
-            .split(' ')
-            .joinToString(" ") { it.capitalize() }
-    }
-    
-    /**
-     * Get confidence percentage
-     */
-    fun getConfidencePercent(): Int {
-        return (confidence * 100).toInt()
-    }
-    
-    /**
-     * Check if prediction meets threshold
-     */
-    fun meetsThreshold(threshold: Float = Config.CONFIDENCE_THRESHOLD): Boolean {
-        return confidence >= threshold
-    }
-    
-    /**
-     * Get top N predictions
-     */
-    fun getTopPredictions(n: Int = 3): List<Pair<String, Float>> {
-        val predictions = allProbabilities.mapIndexed { idx, prob ->
-            val label = Config.IDX_TO_LABEL[idx] ?: "unknown_$idx"
-            label to prob
-        }
-        return predictions.sortedByDescending { it.second }.take(n)
-    }
-    
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (javaClass != other?.javaClass) return false
-
-        other as GestureResult
-
-        if (gesture != other.gesture) return false
-        if (confidence != other.confidence) return false
-        if (!allProbabilities.contentEquals(other.allProbabilities)) return false
-        if (handDetected != other.handDetected) return false
-
-        return true
-    }
-
-    override fun hashCode(): Int {
-        var result = gesture.hashCode()
-        result = 31 * result + confidence.hashCode()
-        result = 31 * result + allProbabilities.contentHashCode()
-        result = 31 * result + handDetected.hashCode()
-        return result
     }
 }
