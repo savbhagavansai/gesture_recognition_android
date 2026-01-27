@@ -4,57 +4,49 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
 import com.google.mediapipe.framework.image.BitmapImageBuilder
-import com.google.mediapipe.tasks.core.BaseOptions
-import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
+import com.google.mediapipe.tasks.core.BaseOptions
 
 /**
- * MediaPipe Hands processor for hand landmark detection
- * Extracts 21 landmarks (x, y, z) per hand
+ * MediaPipe hand landmark processor
+ * Extracts 21 hand landmarks (x, y, z coordinates) from images
  */
 class MediaPipeProcessor(context: Context) {
-    
+
     private val TAG = "MediaPipeProcessor"
-    
+
     private var handLandmarker: HandLandmarker? = null
-    
+
     init {
-        initializeMediaPipe(context)
-    }
-    
-    /**
-     * Initialize MediaPipe HandLandmarker
-     */
-    private fun initializeMediaPipe(context: Context) {
         try {
-            Log.d(TAG, "Initializing MediaPipe HandLandmarker...")
-            
+            // Create HandLandmarker options
             val baseOptions = BaseOptions.builder()
                 .setModelAssetPath("hand_landmarker.task")
                 .build()
-            
+
             val options = HandLandmarker.HandLandmarkerOptions.builder()
                 .setBaseOptions(baseOptions)
-                .setRunningMode(RunningMode.IMAGE)
-                .setNumHands(1)  // Track only one hand
                 .setMinHandDetectionConfidence(Config.MP_HANDS_CONFIDENCE)
                 .setMinTrackingConfidence(Config.MP_HANDS_TRACKING_CONFIDENCE)
+                .setNumHands(2)  // Detect up to 2 hands
+                .setRunningMode(HandLandmarker.RUNNING_MODE_IMAGE)
                 .build()
-            
+
+            // Create HandLandmarker
             handLandmarker = HandLandmarker.createFromOptions(context, options)
-            
-            Log.d(TAG, "MediaPipe initialized successfully")
-            
+
+            Log.d(TAG, "MediaPipe HandLandmarker initialized")
+
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize MediaPipe", e)
             throw RuntimeException("Failed to initialize MediaPipe: ${e.message}", e)
         }
     }
-    
+
     /**
      * Extract hand landmarks from bitmap
-     * 
+     *
      * @param bitmap Input image
      * @param mirrorHorizontal Whether to mirror X coordinates (for front camera)
      * @return FloatArray of 63 values (21 landmarks × 3 coords) or null if no hand detected
@@ -110,9 +102,13 @@ class MediaPipeProcessor(context: Context) {
      * Extract landmarks with additional metadata
      *
      * @param bitmap Input image
+     * @param mirrorHorizontal Whether to mirror X coordinates (for front camera)
      * @return Triple of (landmarks, handedness, confidence) or null
      */
-    fun extractLandmarksWithMetadata(bitmap: Bitmap): Triple<FloatArray, String, Float>? {
+    fun extractLandmarksWithMetadata(
+        bitmap: Bitmap,
+        mirrorHorizontal: Boolean = false
+    ): Triple<FloatArray, String, Float>? {
         val landmarker = handLandmarker ?: return null
 
         try {
@@ -129,7 +125,10 @@ class MediaPipeProcessor(context: Context) {
             var idx = 0
 
             for (landmark in handLandmarks) {
-                landmarks[idx++] = landmark.x()
+                // Mirror X coordinate for front camera
+                val x = if (mirrorHorizontal) 1.0f - landmark.x() else landmark.x()
+
+                landmarks[idx++] = x
                 landmarks[idx++] = landmark.y()
                 landmarks[idx++] = landmark.z()
             }
