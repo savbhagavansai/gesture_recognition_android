@@ -3,21 +3,23 @@ package com.gesture.recognition
 import android.content.Context
 import android.graphics.*
 import android.util.AttributeSet
+import android.util.Log
 import android.view.View
 
 /**
- * Custom overlay view matching Python predict.py UI
+ * Custom overlay view with proper aspect ratio handling
  * - Hand skeleton (21 landmarks + connections)
  * - Top panel (status, buffer, gesture, confidence bar)
  * - Right panel (probability bars for all 11 classes)
- * - Bottom instructions
- * - FPS and frame counter
+ * - Correct scaling to match camera aspect ratio
  */
 class GestureOverlayView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
+
+    private val TAG = "GestureOverlayView"
 
     // Data to display
     private var result: GestureResult? = null
@@ -26,8 +28,11 @@ class GestureOverlayView @JvmOverloads constructor(
     private var frameCount: Int = 0
     private var bufferSize: Int = 0
     private var handDetected: Boolean = false
-    private var imageWidth: Int = 640
-    private var imageHeight: Int = 480
+    private var imageWidth: Int = 320
+    private var imageHeight: Int = 240
+
+    // Thread safety - create copy before drawing
+    private val landmarksLock = Any()
 
     // MediaPipe hand connections (21 landmarks)
     private val handConnections = listOf(
@@ -79,7 +84,7 @@ class GestureOverlayView @JvmOverloads constructor(
     }
 
     private val backgroundPaint = Paint().apply {
-        color = Color.argb(180, 0, 0, 0)  // Semi-transparent black
+        color = Color.argb(180, 0, 0, 0)
         style = Paint.Style.FILL
     }
 
@@ -89,7 +94,7 @@ class GestureOverlayView @JvmOverloads constructor(
     }
 
     /**
-     * Update all data at once
+     * Update all data at once (thread-safe)
      */
     fun updateData(
         result: GestureResult?,
@@ -101,52 +106,98 @@ class GestureOverlayView @JvmOverloads constructor(
         imageWidth: Int,
         imageHeight: Int
     ) {
-        this.result = result
-        this.landmarks = landmarks
-        this.fps = fps
-        this.frameCount = frameCount
-        this.bufferSize = bufferSize
-        this.handDetected = handDetected
-        this.imageWidth = imageWidth
-        this.imageHeight = imageHeight
-        invalidate()
+        synchronized(landmarksLock) {
+            this.result = result
+            this.landmarks = landmarks?.copyOf()  // Make copy for thread safety
+            this.fps = fps
+            this.frameCount = frameCount
+            this.bufferSize = bufferSize
+            this.handDetected = handDetected
+            this.imageWidth = imageWidth
+            this.imageHeight = imageHeight
+        }
+        postInvalidate()  // Thread-safe invalidate
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
 
-        // Draw in order: back to front
-        drawHandSkeleton(canvas)
-        drawTopPanel(canvas)
-        drawProbabilityPanel(canvas)
-        drawBottomInstructions(canvas)
+        try {
+            // Draw in order: back to front
+            drawHandSkeleton(canvas)
+            drawTopPanel(canvas)
+            drawProbabilityPanel(canvas)
+            drawBottomInstructions(canvas)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error drawing overlay", e)
+        }
     }
 
     /**
-     * Draw hand skeleton (21 landmarks + connections)
+     * Draw hand skeleton with proper aspect ratio scaling
      */
     private fun drawHandSkeleton(canvas: Canvas) {
-        val lm = landmarks ?: return
-        if (lm.size != 63) return
+        val lm = synchronized(landmarksLock) {
+            landmarks?.copyOf()  // Get thread-safe copy
+        } ?: return
+
+        if (lm.size != 63) {
+            Log.w(TAG, "Invalid landmarks size: ${lm.size}")
+            return
+        }
 
         val viewWidth = width.toFloat()
         val viewHeight = height.toFloat()
 
-        // MediaPipe landmarks are already normalized (0.0 to 1.0)
-        // Just scale directly to view dimensions
+        if (viewWidth == 0f || viewHeight == 0f) return
+
+        // Calculate proper scale considering aspect ratio
+        val imageAspect = imageWidth.toFloat() / imageHeight
+        val viewAspect = viewWidth / viewHeight
+
+        val scaleX: Float
+        val scaleY: Float
+        val offsetX: Float
+        val offsetY: Float
+
+        if (imageAspect > viewAspect) {
+            // Image is wider than view → fit width, letterbox top/bottom
+            scaleX = viewWidth
+            scaleY = viewWidth / imageAspect
+            offsetX = 0f
+            offsetY = (viewHeight - scaleY) / 2f
+        } else {
+            // Image is taller than view → fit height, letterbox left/right
+            scaleX = viewHeight * imageAspect
+            scaleY = viewHeight
+            offsetX = (viewWidth - scaleX) / 2f
+            offsetY = 0f
+        }
+
+        // Debug logging (first frame only)
+        if (frameCount == 1) {
+            Log.d(TAG, "=== ASPECT RATIO SCALING ===")
+            Log.d(TAG, "Image: ${imageWidth}×${imageHeight} (aspect: $imageAspect)")
+            Log.d(TAG, "View:  ${viewWidth.toInt()}×${viewHeight.toInt()} (aspect: $viewAspect)")
+            Log.d(TAG, "Scale: X=$scaleX, Y=$scaleY")
+            Log.d(TAG, "Offset: X=$offsetX, Y=$offsetY")
+        }
+
+        // Transform landmarks with correct aspect ratio
         val points = mutableListOf<Pair<Float, Float>>()
         for (i in 0 until 21) {
-            // Landmarks: [x, y, z] where x, y are in [0, 1] range
-            val x = lm[i * 3] * viewWidth
-            val y = lm[i * 3 + 1] * viewHeight
+            val x = lm[i * 3] * scaleX + offsetX
+            val y = lm[i * 3 + 1] * scaleY + offsetY
             points.add(Pair(x, y))
         }
 
         // Draw connections first (underneath)
         for ((start, end) in handConnections) {
-            val (x1, y1) = points[start]
-            val (x2, y2) = points[end]
-            canvas.drawLine(x1, y1, x2, y2, connectionPaint)
+            if (start < points.size && end < points.size) {
+                val (x1, y1) = points[start]
+                val (x2, y2) = points[end]
+                canvas.drawLine(x1, y1, x2, y2, connectionPaint)
+            }
         }
 
         // Draw landmarks on top
@@ -264,6 +315,8 @@ class GestureOverlayView @JvmOverloads constructor(
         val res = result ?: return
         val probs = res.allProbabilities
 
+        if (probs.isEmpty()) return
+
         val panelX = width - 350f
         val panelY = 300f
         val panelWidth = 330f
@@ -278,7 +331,7 @@ class GestureOverlayView @JvmOverloads constructor(
 
         // Draw bars
         var barY = panelY + 70f
-        for (i in 0 until Config.NUM_CLASSES) {
+        for (i in 0 until minOf(Config.NUM_CLASSES, probs.size)) {
             val label = Config.IDX_TO_LABEL[i] ?: "unknown"
             val prob = probs[i]
 
@@ -309,7 +362,7 @@ class GestureOverlayView @JvmOverloads constructor(
      * Draw bottom instructions
      */
     private fun drawBottomInstructions(canvas: Canvas) {
-        val instructions = "Double tap to switch camera  •  Touch controls coming soon"
+        val instructions = "Double tap to switch camera  •  Optimized for edge devices"
         tinyTextPaint.color = Color.WHITE
         canvas.drawText(instructions, 40f, height - 40f, tinyTextPaint)
     }

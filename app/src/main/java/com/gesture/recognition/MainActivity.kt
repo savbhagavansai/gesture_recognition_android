@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class MainActivity : AppCompatActivity() {
 
@@ -42,8 +43,13 @@ class MainActivity : AppCompatActivity() {
     private var lastFrameTime = System.currentTimeMillis()
     private var frameCount = 0
 
-    // Hand tracking state
-    private var currentLandmarks: FloatArray? = null
+    // Frame processing control
+    private val isProcessing = AtomicBoolean(false)
+    private var frameSkipCounter = 0
+
+    // Hand tracking state (thread-safe)
+    private val landmarksLock = Any()
+    @Volatile private var currentLandmarks: FloatArray? = null
 
     // Permission launcher
     private val requestPermissionLauncher = registerForActivityResult(
@@ -96,6 +102,9 @@ class MainActivity : AppCompatActivity() {
         previewView = findViewById(R.id.previewView)
         overlayView = findViewById(R.id.overlayView)
 
+        // Set preview scale type to match overlay
+        previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
+
         // Double tap to switch camera
         var lastTapTime = 0L
         overlayView.setOnTouchListener { _, event ->
@@ -143,9 +152,9 @@ class MainActivity : AppCompatActivity() {
 
         provider.unbindAll()
 
-        // Preview - lower resolution for better performance
+        // Preview - lower resolution for edge devices
         val preview = Preview.Builder()
-            .setTargetResolution(android.util.Size(480, 360))  // Reduced from 640×480
+            .setTargetResolution(android.util.Size(320, 240))  // Low resolution for performance
             .build()
             .also {
                 it.setSurfaceProvider(previewView.surfaceProvider)
@@ -153,7 +162,7 @@ class MainActivity : AppCompatActivity() {
 
         // Image analysis - match preview resolution
         val imageAnalyzer = ImageAnalysis.Builder()
-            .setTargetResolution(android.util.Size(480, 360))  // Reduced from 640×480
+            .setTargetResolution(android.util.Size(320, 240))
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also {
@@ -185,6 +194,20 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun processImageProxy(imageProxy: ImageProxy) {
+        // AGGRESSIVE FRAME DROPPING: Skip if still processing previous frame
+        if (!isProcessing.compareAndSet(false, true)) {
+            imageProxy.close()
+            return  // Drop this frame immediately
+        }
+
+        // FRAME SKIPPING: Process every 2nd frame for better performance
+        frameSkipCounter++
+        if (frameSkipCounter % 2 != 0) {
+            isProcessing.set(false)
+            imageProxy.close()
+            return
+        }
+
         val currentTime = System.currentTimeMillis()
         frameCount++
 
@@ -196,28 +219,44 @@ class MainActivity : AppCompatActivity() {
 
             if (bitmap != null) {
                 lifecycleScope.launch(Dispatchers.Default) {
-                    // Process frame with rotation and mirroring
-                    val result = gestureRecognizer?.processFrame(
-                        bitmap,
-                        imageRotation,
-                        useFrontCamera
-                    )
+                    try {
+                        // Process frame with rotation and mirroring
+                        val result = gestureRecognizer?.processFrame(
+                            bitmap,
+                            imageRotation,
+                            useFrontCamera
+                        )
 
-                    // Get landmarks for overlay
-                    currentLandmarks = gestureRecognizer?.getLastLandmarks()
+                        // Get landmarks with thread safety
+                        val landmarks = synchronized(landmarksLock) {
+                            gestureRecognizer?.getLastLandmarks()?.copyOf()
+                        }
+                        currentLandmarks = landmarks
 
-                    // Calculate FPS
-                    val fps = calculateFPS(currentTime)
+                        // Calculate FPS
+                        val fps = calculateFPS(currentTime)
 
-                    // Update UI
-                    withContext(Dispatchers.Main) {
-                        updateOverlay(result, fps, imageProxy.width, imageProxy.height)
+                        // Update UI on main thread
+                        withContext(Dispatchers.Main) {
+                            try {
+                                updateOverlay(result, fps, imageProxy.width, imageProxy.height)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "UI update failed", e)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Frame processing error", e)
+                    } finally {
+                        isProcessing.set(false)
                     }
                 }
+            } else {
+                isProcessing.set(false)
             }
 
         } catch (e: Exception) {
             Log.e(TAG, "Frame processing error", e)
+            isProcessing.set(false)
         } finally {
             imageProxy.close()
         }
@@ -225,9 +264,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun ImageProxy.toBitmap(): Bitmap? {
         return try {
-            // Optimized conversion: YUV → Bitmap without JPEG compression
-            // This is 3-5x faster than the JPEG method
-
+            // Optimized conversion with lower quality for speed
             val yBuffer = planes[0].buffer
             val uBuffer = planes[1].buffer
             val vBuffer = planes[2].buffer
@@ -238,23 +275,21 @@ class MainActivity : AppCompatActivity() {
 
             val nv21 = ByteArray(ySize + uSize + vSize)
 
-            // Copy YUV planes to NV21 format
             yBuffer.get(nv21, 0, ySize)
             vBuffer.get(nv21, ySize, vSize)
             uBuffer.get(nv21, ySize + vSize, uSize)
 
-            // Create YuvImage for faster conversion
             val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
             val out = ByteArrayOutputStream()
 
-            // Use lower quality JPEG (85 instead of 100) for faster compression
-            yuvImage.compressToJpeg(Rect(0, 0, width, height), 85, out)
+            // Lower quality for faster processing
+            yuvImage.compressToJpeg(Rect(0, 0, width, height), 75, out)
             val imageBytes = out.toByteArray()
 
-            // Decode with options for faster processing
+            // Use RGB_565 for faster decoding
             val options = BitmapFactory.Options().apply {
-                inPreferredConfig = Bitmap.Config.RGB_565  // Use 16-bit (faster than ARGB_8888)
-                inSampleSize = 1  // No downsampling at decode time
+                inPreferredConfig = Bitmap.Config.RGB_565
+                inSampleSize = 1
             }
 
             BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, options)
@@ -285,16 +320,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateOverlay(result: GestureResult?, fps: Float, imageWidth: Int, imageHeight: Int) {
-        overlayView.updateData(
-            result = result,
-            landmarks = currentLandmarks,
-            fps = fps,
-            frameCount = frameCount,
-            bufferSize = gestureRecognizer?.getBufferSize() ?: 0,
-            handDetected = currentLandmarks != null,
-            imageWidth = imageWidth,
-            imageHeight = imageHeight
-        )
+        try {
+            // Thread-safe landmark access
+            val landmarks = synchronized(landmarksLock) {
+                currentLandmarks?.copyOf()
+            }
+
+            overlayView.updateData(
+                result = result,
+                landmarks = landmarks,
+                fps = fps,
+                frameCount = frameCount,
+                bufferSize = gestureRecognizer?.getBufferSize() ?: 0,
+                handDetected = landmarks != null,
+                imageWidth = imageWidth,
+                imageHeight = imageHeight
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Overlay update failed", e)
+        }
     }
 
     override fun onDestroy() {
