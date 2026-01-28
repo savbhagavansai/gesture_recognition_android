@@ -135,11 +135,11 @@ class MediaPipeProcessor(context: Context) {
         // Most Android devices have camera sensor in landscape, but display in portrait
         when (rotation) {
             90 -> {
-                // 90° clockwise rotation
-                // Sensor X → Display Y
-                // Sensor Y → Display (1-X)
-                newX = y
-                newY = 1.0f - x
+                // 90° COUNTER-CLOCKWISE rotation (anti-clockwise)
+                // Sensor X → Display (1-Y)
+                // Sensor Y → Display X
+                newX = 1.0f - y
+                newY = x
             }
             180 -> {
                 // 180° rotation
@@ -148,11 +148,11 @@ class MediaPipeProcessor(context: Context) {
                 newY = 1.0f - y
             }
             270 -> {
-                // 90° counter-clockwise (or 270° clockwise)
-                // Sensor X → Display (1-Y)
-                // Sensor Y → Display X
-                newX = 1.0f - y
-                newY = x
+                // 270° counter-clockwise (or 90° clockwise)
+                // Sensor X → Display Y
+                // Sensor Y → Display (1-X)
+                newX = y
+                newY = 1.0f - x
             }
             0 -> {
                 // No rotation needed
