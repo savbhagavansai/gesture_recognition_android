@@ -201,8 +201,17 @@ class ONNXInference(context: Context) {
             val outputTensor = results[0].value as Array<*>
             val logits = (outputTensor[0] as FloatArray)
 
+            // DEBUG: Log raw logits (first time only)
+            if (logits.size == Config.NUM_CLASSES) {
+                Log.d(TAG, "=== ONNX DEBUG (first 3 logits) ===")
+                Log.d(TAG, "Raw logits: [${logits[0]}, ${logits[1]}, ${logits[2]}, ...]")
+            }
+
             // Apply softmax to convert logits to probabilities
             val probabilities = applySoftmax(logits)
+
+            // DEBUG: Log probabilities
+            Log.d(TAG, "Probabilities: ${probabilities.take(5).joinToString { "%.2f%%".format(it * 100) }}")
 
             // Find predicted class (argmax)
             var maxIdx = 0
@@ -214,6 +223,8 @@ class ONNXInference(context: Context) {
                     maxIdx = i
                 }
             }
+
+            Log.d(TAG, "Prediction: ${Config.IDX_TO_LABEL[maxIdx]} = %.1f%%".format(maxProb * 100))
 
             // Clean up
             inputTensor.close()

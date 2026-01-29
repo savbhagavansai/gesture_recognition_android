@@ -81,6 +81,14 @@ class GestureRecognizer(context: Context) {
             // Step 2: Normalize landmarks
             val normalized = LandmarkNormalizer.normalize(landmarks)
 
+            // DEBUG: Log first frame of normalized data
+            if (frameCount % 30 == 1) {
+                Log.d(TAG, "=== NORMALIZATION DEBUG (Frame $frameCount) ===")
+                Log.d(TAG, "Raw landmark[0] (wrist): [${landmarks[0]}, ${landmarks[1]}, ${landmarks[2]}]")
+                Log.d(TAG, "Normalized[0-2]: [${normalized[0]}, ${normalized[1]}, ${normalized[2]}]")
+                Log.d(TAG, "Normalized min/max: ${normalized.minOrNull()} / ${normalized.maxOrNull()}")
+            }
+
             // Step 3: Add to rolling buffer
             sequenceBuffer.add(normalized)
 

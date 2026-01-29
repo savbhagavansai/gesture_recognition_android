@@ -24,6 +24,7 @@ class GestureOverlayView @JvmOverloads constructor(
     // Data to display
     private var result: GestureResult? = null
     private var landmarks: FloatArray? = null
+    private var displayPoints: List<Pair<Float, Float>>? = null  // Pre-computed display coordinates
     private var fps: Float = 0f
     private var frameCount: Int = 0
     private var bufferSize: Int = 0
@@ -97,6 +98,7 @@ class GestureOverlayView @JvmOverloads constructor(
 
     /**
      * Update all data at once (thread-safe)
+     * Pre-computes display coordinates for faster rendering
      */
     fun updateData(
         result: GestureResult?,
@@ -112,7 +114,7 @@ class GestureOverlayView @JvmOverloads constructor(
     ) {
         synchronized(landmarksLock) {
             this.result = result
-            this.landmarks = landmarks?.copyOf()  // Make copy for thread safety
+            this.landmarks = landmarks?.copyOf()
             this.fps = fps
             this.frameCount = frameCount
             this.bufferSize = bufferSize
@@ -121,8 +123,75 @@ class GestureOverlayView @JvmOverloads constructor(
             this.imageHeight = imageHeight
             this.rotation = rotation
             this.mirrorHorizontal = mirrorHorizontal
+
+            // PRE-COMPUTE display coordinates (do heavy math here, not in onDraw!)
+            this.displayPoints = if (landmarks != null && landmarks.size == 63) {
+                preComputeDisplayPoints(landmarks, imageWidth, imageHeight, rotation, mirrorHorizontal)
+            } else {
+                null
+            }
         }
-        postInvalidate()  // Thread-safe invalidate
+        postInvalidate()
+    }
+
+    /**
+     * Pre-compute all display coordinates (runs in background, not on UI thread!)
+     */
+    private fun preComputeDisplayPoints(
+        lm: FloatArray,
+        imageWidth: Int,
+        imageHeight: Int,
+        rotation: Int,
+        mirror: Boolean
+    ): List<Pair<Float, Float>> {
+        val viewWidth = width.toFloat()
+        val viewHeight = height.toFloat()
+
+        if (viewWidth == 0f || viewHeight == 0f) {
+            return emptyList()
+        }
+
+        // Calculate aspect ratio scaling
+        val imageAspect = imageWidth.toFloat() / imageHeight
+        val viewAspect = viewWidth / viewHeight
+
+        val scaleX: Float
+        val scaleY: Float
+        val offsetX: Float
+        val offsetY: Float
+
+        if (imageAspect > viewAspect) {
+            scaleX = viewWidth
+            scaleY = viewWidth / imageAspect
+            offsetX = 0f
+            offsetY = (viewHeight - scaleY) / 2f
+        } else {
+            scaleX = viewHeight * imageAspect
+            scaleY = viewHeight
+            offsetX = (viewWidth - scaleX) / 2f
+            offsetY = 0f
+        }
+
+        // Transform all 21 landmarks
+        val points = mutableListOf<Pair<Float, Float>>()
+        for (i in 0 until 21) {
+            val rawX = lm[i * 3]
+            val rawY = lm[i * 3 + 1]
+
+            // Apply rotation
+            val (rotatedX, rotatedY) = transformCoordinate(rawX, rawY, rotation)
+
+            // Apply mirroring
+            val finalX = if (mirror) 1.0f - rotatedX else rotatedX
+            val finalY = rotatedY
+
+            // Scale to view coordinates
+            val x = finalX * scaleX + offsetX
+            val y = finalY * scaleY + offsetY
+            points.add(Pair(x, y))
+        }
+
+        return points
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -140,73 +209,17 @@ class GestureOverlayView @JvmOverloads constructor(
     }
 
     /**
-     * Draw hand skeleton with proper aspect ratio scaling
+     * Draw hand skeleton using PRE-COMPUTED display coordinates
+     * (No transformation math here - already done in updateData!)
      */
     private fun drawHandSkeleton(canvas: Canvas) {
-        val lm = synchronized(landmarksLock) {
-            landmarks?.copyOf()  // Get thread-safe copy
+        // Use pre-computed display points
+        val points = synchronized(landmarksLock) {
+            displayPoints
         } ?: return
 
-        if (lm.size != 63) {
-            Log.w(TAG, "Invalid landmarks size: ${lm.size}")
+        if (points.isEmpty() || points.size != 21) {
             return
-        }
-
-        val viewWidth = width.toFloat()
-        val viewHeight = height.toFloat()
-
-        if (viewWidth == 0f || viewHeight == 0f) return
-
-        // Calculate proper scale considering aspect ratio
-        val imageAspect = imageWidth.toFloat() / imageHeight
-        val viewAspect = viewWidth / viewHeight
-
-        val scaleX: Float
-        val scaleY: Float
-        val offsetX: Float
-        val offsetY: Float
-
-        if (imageAspect > viewAspect) {
-            // Image is wider than view → fit width, letterbox top/bottom
-            scaleX = viewWidth
-            scaleY = viewWidth / imageAspect
-            offsetX = 0f
-            offsetY = (viewHeight - scaleY) / 2f
-        } else {
-            // Image is taller than view → fit height, letterbox left/right
-            scaleX = viewHeight * imageAspect
-            scaleY = viewHeight
-            offsetX = (viewWidth - scaleX) / 2f
-            offsetY = 0f
-        }
-
-        // Debug logging (first frame only)
-        if (frameCount == 1) {
-            Log.d(TAG, "=== ASPECT RATIO SCALING ===")
-            Log.d(TAG, "Image: ${imageWidth}×${imageHeight} (aspect: $imageAspect)")
-            Log.d(TAG, "View:  ${viewWidth.toInt()}×${viewHeight.toInt()} (aspect: $viewAspect)")
-            Log.d(TAG, "Scale: X=$scaleX, Y=$scaleY")
-            Log.d(TAG, "Offset: X=$offsetX, Y=$offsetY")
-        }
-
-        // Transform landmarks with correct aspect ratio
-        val points = mutableListOf<Pair<Float, Float>>()
-        for (i in 0 until 21) {
-            // Get RAW landmark coordinates
-            val rawX = lm[i * 3]
-            val rawY = lm[i * 3 + 1]
-
-            // Apply rotation transformation
-            val (rotatedX, rotatedY) = transformCoordinate(rawX, rawY, rotation)
-
-            // Apply mirroring
-            val finalX = if (mirrorHorizontal) 1.0f - rotatedX else rotatedX
-            val finalY = rotatedY
-
-            // Scale to view with aspect ratio correction
-            val x = finalX * scaleX + offsetX
-            val y = finalY * scaleY + offsetY
-            points.add(Pair(x, y))
         }
 
         // Draw connections first (underneath)
