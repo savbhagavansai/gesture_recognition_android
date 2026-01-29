@@ -220,12 +220,8 @@ class MainActivity : AppCompatActivity() {
             if (bitmap != null) {
                 lifecycleScope.launch(Dispatchers.Default) {
                     try {
-                        // Process frame with rotation and mirroring
-                        val result = gestureRecognizer?.processFrame(
-                            bitmap,
-                            imageRotation,
-                            useFrontCamera
-                        )
+                        // Process frame with RAW landmarks (for model)
+                        val result = gestureRecognizer?.processFrame(bitmap)
 
                         // Get landmarks with thread safety
                         val landmarks = synchronized(landmarksLock) {
@@ -236,10 +232,17 @@ class MainActivity : AppCompatActivity() {
                         // Calculate FPS
                         val fps = calculateFPS(currentTime)
 
-                        // Update UI on main thread
+                        // Update UI on main thread (pass rotation for display transformation)
                         withContext(Dispatchers.Main) {
                             try {
-                                updateOverlay(result, fps, imageProxy.width, imageProxy.height)
+                                updateOverlay(
+                                    result,
+                                    fps,
+                                    imageProxy.width,
+                                    imageProxy.height,
+                                    imageRotation,
+                                    useFrontCamera
+                                )
                             } catch (e: Exception) {
                                 Log.e(TAG, "UI update failed", e)
                             }
@@ -319,7 +322,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateOverlay(result: GestureResult?, fps: Float, imageWidth: Int, imageHeight: Int) {
+    private fun updateOverlay(
+        result: GestureResult?,
+        fps: Float,
+        imageWidth: Int,
+        imageHeight: Int,
+        rotation: Int,
+        useFrontCamera: Boolean
+    ) {
         try {
             // Thread-safe landmark access
             val landmarks = synchronized(landmarksLock) {
@@ -334,7 +344,9 @@ class MainActivity : AppCompatActivity() {
                 bufferSize = gestureRecognizer?.getBufferSize() ?: 0,
                 handDetected = landmarks != null,
                 imageWidth = imageWidth,
-                imageHeight = imageHeight
+                imageHeight = imageHeight,
+                rotation = rotation,
+                mirrorHorizontal = useFrontCamera
             )
         } catch (e: Exception) {
             Log.e(TAG, "Overlay update failed", e)

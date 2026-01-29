@@ -30,6 +30,8 @@ class GestureOverlayView @JvmOverloads constructor(
     private var handDetected: Boolean = false
     private var imageWidth: Int = 320
     private var imageHeight: Int = 240
+    private var rotation: Int = 0
+    private var mirrorHorizontal: Boolean = false
 
     // Thread safety - create copy before drawing
     private val landmarksLock = Any()
@@ -104,7 +106,9 @@ class GestureOverlayView @JvmOverloads constructor(
         bufferSize: Int,
         handDetected: Boolean,
         imageWidth: Int,
-        imageHeight: Int
+        imageHeight: Int,
+        rotation: Int,
+        mirrorHorizontal: Boolean
     ) {
         synchronized(landmarksLock) {
             this.result = result
@@ -115,6 +119,8 @@ class GestureOverlayView @JvmOverloads constructor(
             this.handDetected = handDetected
             this.imageWidth = imageWidth
             this.imageHeight = imageHeight
+            this.rotation = rotation
+            this.mirrorHorizontal = mirrorHorizontal
         }
         postInvalidate()  // Thread-safe invalidate
     }
@@ -186,8 +192,20 @@ class GestureOverlayView @JvmOverloads constructor(
         // Transform landmarks with correct aspect ratio
         val points = mutableListOf<Pair<Float, Float>>()
         for (i in 0 until 21) {
-            val x = lm[i * 3] * scaleX + offsetX
-            val y = lm[i * 3 + 1] * scaleY + offsetY
+            // Get RAW landmark coordinates
+            val rawX = lm[i * 3]
+            val rawY = lm[i * 3 + 1]
+
+            // Apply rotation transformation
+            val (rotatedX, rotatedY) = transformCoordinate(rawX, rawY, rotation)
+
+            // Apply mirroring
+            val finalX = if (mirrorHorizontal) 1.0f - rotatedX else rotatedX
+            val finalY = rotatedY
+
+            // Scale to view with aspect ratio correction
+            val x = finalX * scaleX + offsetX
+            val y = finalY * scaleY + offsetY
             points.add(Pair(x, y))
         }
 
@@ -203,6 +221,30 @@ class GestureOverlayView @JvmOverloads constructor(
         // Draw landmarks on top
         for ((x, y) in points) {
             canvas.drawCircle(x, y, 10f, landmarkPaint)
+        }
+    }
+
+    /**
+     * Transform coordinate based on rotation
+     */
+    private fun transformCoordinate(x: Float, y: Float, rotation: Int): Pair<Float, Float> {
+        return when (rotation) {
+            90 -> {
+                // 90° counter-clockwise
+                Pair(1.0f - y, x)
+            }
+            180 -> {
+                // 180° rotation
+                Pair(1.0f - x, 1.0f - y)
+            }
+            270 -> {
+                // 270° counter-clockwise (90° clockwise)
+                Pair(y, 1.0f - x)
+            }
+            else -> {
+                // No rotation
+                Pair(x, y)
+            }
         }
     }
 

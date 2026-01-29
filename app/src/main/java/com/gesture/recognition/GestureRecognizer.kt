@@ -40,21 +40,16 @@ class GestureRecognizer(context: Context) {
      * - Rolling buffer (always maintains last 15 frames)
      * - Predicts EVERY frame once buffer >= 15
      * - Only clears buffer after multiple missed frames
+     * - Uses RAW landmarks (matching Python training data)
      *
      * @param bitmap Input frame
-     * @param rotation Image rotation in degrees (0, 90, 180, 270)
-     * @param mirrorHorizontal Whether to mirror landmarks (for front camera)
      */
-    fun processFrame(
-        bitmap: Bitmap,
-        rotation: Int = 0,
-        mirrorHorizontal: Boolean = false
-    ): GestureResult? {
+    fun processFrame(bitmap: Bitmap): GestureResult? {
         frameCount++
 
         try {
-            // Step 1: Extract landmarks with rotation and mirroring
-            val landmarks = mediaPipeProcessor.extractLandmarks(bitmap, rotation, mirrorHorizontal)
+            // Step 1: Extract RAW landmarks (no transformation - matching Python!)
+            val landmarks = mediaPipeProcessor.extractLandmarks(bitmap)
 
             if (landmarks == null) {
                 // Hand not detected
