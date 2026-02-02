@@ -60,6 +60,14 @@ class ONNXInference(context: Context) {
             sessionOptions.setIntraOpNumThreads(2)
             sessionOptions.setInterOpNumThreads(2)
 
+            // Try to enable NNAPI (Android Neural Networks API) for hardware acceleration
+            try {
+                sessionOptions.addNnapi()
+                Log.d(TAG, "✓ NNAPI hardware acceleration enabled")
+            } catch (e: Exception) {
+                Log.w(TAG, "NNAPI not available, using CPU: ${e.message}")
+            }
+
             // Try loading the model
             Log.d(TAG, "Creating ONNX session...")
 

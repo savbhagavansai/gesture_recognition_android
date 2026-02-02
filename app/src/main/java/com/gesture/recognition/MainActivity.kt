@@ -154,7 +154,7 @@ class MainActivity : AppCompatActivity() {
 
         // Preview - lower resolution for edge devices
         val preview = Preview.Builder()
-            .setTargetResolution(android.util.Size(320, 240))  // Low resolution for performance
+            .setTargetResolution(android.util.Size(240, 180))  // Reduced for performance
             .build()
             .also {
                 it.setSurfaceProvider(previewView.surfaceProvider)
@@ -162,7 +162,7 @@ class MainActivity : AppCompatActivity() {
 
         // Image analysis - match preview resolution
         val imageAnalyzer = ImageAnalysis.Builder()
-            .setTargetResolution(android.util.Size(320, 240))
+            .setTargetResolution(android.util.Size(240, 180))  // Reduced for performance
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also {
