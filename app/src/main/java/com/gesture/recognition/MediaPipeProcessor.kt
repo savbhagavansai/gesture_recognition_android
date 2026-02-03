@@ -20,9 +20,10 @@ class MediaPipeProcessor(context: Context) {
 
     init {
         try {
-            // Create HandLandmarker options
+            // Create HandLandmarker options with GPU acceleration
             val baseOptions = BaseOptions.builder()
                 .setModelAssetPath("hand_landmarker.task")
+                .setDelegate(BaseOptions.Delegate.GPU)  // ✓ GPU acceleration enabled!
                 .build()
 
             val options = HandLandmarker.HandLandmarkerOptions.builder()
@@ -35,7 +36,7 @@ class MediaPipeProcessor(context: Context) {
             // Create HandLandmarker
             handLandmarker = HandLandmarker.createFromOptions(context, options)
 
-            Log.d(TAG, "MediaPipe HandLandmarker initialized")
+            Log.d(TAG, "✓ MediaPipe initialized with GPU acceleration")
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize MediaPipe", e)

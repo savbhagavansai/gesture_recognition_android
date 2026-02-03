@@ -24,7 +24,11 @@ class GestureOverlayView @JvmOverloads constructor(
     // Data to display
     private var result: GestureResult? = null
     private var landmarks: FloatArray? = null
-    private var displayPoints: List<Pair<Float, Float>>? = null  // Pre-computed display coordinates
+
+    // OPTIMIZATION: Use FloatArray instead of List<Pair> to avoid allocations
+    // Stores x,y pairs: [x0, y0, x1, y1, ..., x20, y20] = 42 floats
+    private var displayPoints: FloatArray? = null
+
     private var fps: Float = 0f
     private var frameCount: Int = 0
     private var bufferSize: Int = 0
@@ -33,6 +37,17 @@ class GestureOverlayView @JvmOverloads constructor(
     private var imageHeight: Int = 240
     private var rotation: Int = 0
     private var mirrorHorizontal: Boolean = false
+
+    // OPTIMIZATION: Cache aspect ratio calculations (recalculate only on resize)
+    private var cachedViewWidth = 0f
+    private var cachedViewHeight = 0f
+    private var cachedImageWidth = 0
+    private var cachedImageHeight = 0
+    private var cachedScaleX = 0f
+    private var cachedScaleY = 0f
+    private var cachedOffsetX = 0f
+    private var cachedOffsetY = 0f
+    private var cacheValid = false
 
     // Thread safety - create copy before drawing
     private val landmarksLock = Any()
@@ -136,6 +151,7 @@ class GestureOverlayView @JvmOverloads constructor(
 
     /**
      * Pre-compute all display coordinates (runs in background, not on UI thread!)
+     * OPTIMIZED: Uses cached scale/offset values and FloatArray instead of List<Pair>
      */
     private fun preComputeDisplayPoints(
         lm: FloatArray,
@@ -143,37 +159,50 @@ class GestureOverlayView @JvmOverloads constructor(
         imageHeight: Int,
         rotation: Int,
         mirror: Boolean
-    ): List<Pair<Float, Float>> {
+    ): FloatArray {
         val viewWidth = width.toFloat()
         val viewHeight = height.toFloat()
 
         if (viewWidth == 0f || viewHeight == 0f) {
-            return emptyList()
+            return FloatArray(0)
         }
 
-        // Calculate aspect ratio scaling
-        val imageAspect = imageWidth.toFloat() / imageHeight
-        val viewAspect = viewWidth / viewHeight
+        // Check if cache is invalid (view or image dimensions changed)
+        if (!cacheValid ||
+            viewWidth != cachedViewWidth ||
+            viewHeight != cachedViewHeight ||
+            imageWidth != cachedImageWidth ||
+            imageHeight != cachedImageHeight) {
 
-        val scaleX: Float
-        val scaleY: Float
-        val offsetX: Float
-        val offsetY: Float
+            // Recalculate and cache aspect ratio scaling
+            val imageAspect = imageWidth.toFloat() / imageHeight
+            val viewAspect = viewWidth / viewHeight
 
-        if (imageAspect > viewAspect) {
-            scaleX = viewWidth
-            scaleY = viewWidth / imageAspect
-            offsetX = 0f
-            offsetY = (viewHeight - scaleY) / 2f
-        } else {
-            scaleX = viewHeight * imageAspect
-            scaleY = viewHeight
-            offsetX = (viewWidth - scaleX) / 2f
-            offsetY = 0f
+            if (imageAspect > viewAspect) {
+                cachedScaleX = viewWidth
+                cachedScaleY = viewWidth / imageAspect
+                cachedOffsetX = 0f
+                cachedOffsetY = (viewHeight - cachedScaleY) / 2f
+            } else {
+                cachedScaleX = viewHeight * imageAspect
+                cachedScaleY = viewHeight
+                cachedOffsetX = (viewWidth - cachedScaleX) / 2f
+                cachedOffsetY = 0f
+            }
+
+            // Update cache
+            cachedViewWidth = viewWidth
+            cachedViewHeight = viewHeight
+            cachedImageWidth = imageWidth
+            cachedImageHeight = imageHeight
+            cacheValid = true
         }
 
-        // Transform all 21 landmarks
-        val points = mutableListOf<Pair<Float, Float>>()
+        // OPTIMIZATION: Use FloatArray instead of List<Pair>
+        // 21 landmarks × 2 coordinates = 42 floats
+        val points = FloatArray(42)
+
+        // Transform all 21 landmarks using CACHED scale/offset
         for (i in 0 until 21) {
             val rawX = lm[i * 3]
             val rawY = lm[i * 3 + 1]
@@ -185,10 +214,9 @@ class GestureOverlayView @JvmOverloads constructor(
             val finalX = if (mirror) 1.0f - rotatedX else rotatedX
             val finalY = rotatedY
 
-            // Scale to view coordinates
-            val x = finalX * scaleX + offsetX
-            val y = finalY * scaleY + offsetY
-            points.add(Pair(x, y))
+            // Scale to view coordinates using CACHED values
+            points[i * 2] = finalX * cachedScaleX + cachedOffsetX
+            points[i * 2 + 1] = finalY * cachedScaleY + cachedOffsetY
         }
 
         return points
@@ -211,28 +239,33 @@ class GestureOverlayView @JvmOverloads constructor(
     /**
      * Draw hand skeleton using PRE-COMPUTED display coordinates
      * (No transformation math here - already done in updateData!)
+     * OPTIMIZED: Uses FloatArray for zero-allocation drawing
      */
     private fun drawHandSkeleton(canvas: Canvas) {
-        // Use pre-computed display points
+        // Use pre-computed display points (FloatArray: [x0,y0, x1,y1, ...])
         val points = synchronized(landmarksLock) {
             displayPoints
         } ?: return
 
-        if (points.isEmpty() || points.size != 21) {
+        if (points.isEmpty() || points.size != 42) {  // 21 landmarks × 2 = 42
             return
         }
 
         // Draw connections first (underneath)
         for ((start, end) in handConnections) {
-            if (start < points.size && end < points.size) {
-                val (x1, y1) = points[start]
-                val (x2, y2) = points[end]
+            if (start * 2 + 1 < points.size && end * 2 + 1 < points.size) {
+                val x1 = points[start * 2]
+                val y1 = points[start * 2 + 1]
+                val x2 = points[end * 2]
+                val y2 = points[end * 2 + 1]
                 canvas.drawLine(x1, y1, x2, y2, connectionPaint)
             }
         }
 
         // Draw landmarks on top
-        for ((x, y) in points) {
+        for (i in 0 until 21) {
+            val x = points[i * 2]
+            val y = points[i * 2 + 1]
             canvas.drawCircle(x, y, 10f, landmarkPaint)
         }
     }
@@ -420,5 +453,14 @@ class GestureOverlayView @JvmOverloads constructor(
         val instructions = "Double tap to switch camera  •  Optimized for edge devices"
         tinyTextPaint.color = Color.WHITE
         canvas.drawText(instructions, 40f, height - 40f, tinyTextPaint)
+    }
+
+    /**
+     * OPTIMIZATION: Invalidate cache when view size changes
+     */
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        cacheValid = false  // Force recalculation of scale/offset
+        Log.d(TAG, "View resized: ${w}×${h}, cache invalidated")
     }
 }
