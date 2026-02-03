@@ -7,6 +7,7 @@ import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
 import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.core.Delegate
 
 /**
  * MediaPipe hand landmark processor with rotation and mirroring support
@@ -23,7 +24,7 @@ class MediaPipeProcessor(context: Context) {
             // Create HandLandmarker options with GPU acceleration
             val baseOptions = BaseOptions.builder()
                 .setModelAssetPath("hand_landmarker.task")
-                .setDelegate(BaseOptions.Delegate.GPU)  // ✓ GPU acceleration enabled!
+                .setDelegate(Delegate.GPU)  // ✓ GPU acceleration enabled!
                 .build()
 
             val options = HandLandmarker.HandLandmarkerOptions.builder()
