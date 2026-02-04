@@ -46,10 +46,13 @@ class GestureRecognizer(context: Context) {
      */
     fun processFrame(bitmap: Bitmap): GestureResult? {
         frameCount++
+        val t0 = System.nanoTime() // High precision timing
 
         try {
             // Step 1: Extract RAW landmarks (no transformation - matching Python!)
             val landmarks = mediaPipeProcessor.extractLandmarks(bitmap)
+            val t1 = System.nanoTime()
+            val mediaPipeMs = (t1 - t0) / 1_000_000.0 // Convert nanoseconds to milliseconds
 
             if (landmarks == null) {
                 // Hand not detected
@@ -70,7 +73,10 @@ class GestureRecognizer(context: Context) {
                     confidence = 0f,
                     allProbabilities = FloatArray(Config.NUM_CLASSES),
                     handDetected = false,
-                    bufferProgress = 0f
+                    bufferProgress = 0f,
+                    mediaPipeTimeMs = mediaPipeMs,
+                    onnxTimeMs = 0.0,
+                    totalTimeMs = mediaPipeMs
                 )
             }
 
@@ -80,6 +86,7 @@ class GestureRecognizer(context: Context) {
 
             // Step 2: Normalize landmarks
             val normalized = LandmarkNormalizer.normalize(landmarks)
+            val t2 = System.nanoTime()
 
             // DEBUG: Log first frame of normalized data
             if (frameCount % 30 == 1) {
@@ -96,21 +103,34 @@ class GestureRecognizer(context: Context) {
             val currentBufferSize = sequenceBuffer.size()
 
             if (currentBufferSize < Config.SEQUENCE_LENGTH) {
+                val totalMs = (t2 - t0) / 1_000_000.0
                 // Still collecting frames
                 return GestureResult(
                     gesture = "Collecting frames...",
                     confidence = 0f,
                     allProbabilities = FloatArray(Config.NUM_CLASSES),
                     handDetected = true,
-                    bufferProgress = currentBufferSize.toFloat() / Config.SEQUENCE_LENGTH.toFloat()
+                    bufferProgress = currentBufferSize.toFloat() / Config.SEQUENCE_LENGTH.toFloat(),
+                    mediaPipeTimeMs = mediaPipeMs,
+                    onnxTimeMs = 0.0,
+                    totalTimeMs = totalMs
                 )
             }
 
             // Step 5: Buffer is full - run prediction EVERY FRAME (continuous)
             val sequence = sequenceBuffer.getSequence() ?: return null
+            val t3 = System.nanoTime()
 
             // Try to predict (returns null if confidence < threshold)
             val prediction = onnxInference.predictWithConfidence(sequence)
+            val t4 = System.nanoTime()
+            val onnxMs = (t4 - t3) / 1_000_000.0
+            val totalMs = (t4 - t0) / 1_000_000.0
+
+            // Log detailed timing every 30 frames
+            if (frameCount % 30 == 0) {
+                Log.d(TAG, "⏱️ MediaPipe: ${String.format("%.1f", mediaPipeMs)}ms | ONNX: ${String.format("%.1f", onnxMs)}ms | Total: ${String.format("%.1f", totalMs)}ms")
+            }
 
             if (prediction == null) {
                 // Low confidence - still show some info
@@ -128,7 +148,10 @@ class GestureRecognizer(context: Context) {
                         allProbabilities = probabilities,
                         handDetected = true,
                         bufferProgress = 1f,
-                        isStable = false
+                        isStable = false,
+                        mediaPipeTimeMs = mediaPipeMs,
+                        onnxTimeMs = onnxMs,
+                        totalTimeMs = totalMs
                     )
                 } else {
                     Log.w(TAG, "Raw prediction returned null")
@@ -137,7 +160,10 @@ class GestureRecognizer(context: Context) {
                         confidence = 0f,
                         allProbabilities = FloatArray(Config.NUM_CLASSES),
                         handDetected = true,
-                        bufferProgress = 1f
+                        bufferProgress = 1f,
+                        mediaPipeTimeMs = mediaPipeMs,
+                        onnxTimeMs = onnxMs,
+                        totalTimeMs = totalMs
                     )
                 }
             }
@@ -161,7 +187,10 @@ class GestureRecognizer(context: Context) {
                 allProbabilities = probabilities,
                 handDetected = true,
                 bufferProgress = 1f,
-                isStable = predictionSmoother.isStable()
+                isStable = predictionSmoother.isStable(),
+                mediaPipeTimeMs = mediaPipeMs,
+                onnxTimeMs = onnxMs,
+                totalTimeMs = totalMs
             )
 
         } catch (e: Exception) {
@@ -172,7 +201,10 @@ class GestureRecognizer(context: Context) {
                 confidence = 0f,
                 allProbabilities = FloatArray(Config.NUM_CLASSES),
                 handDetected = false,
-                bufferProgress = 0f
+                bufferProgress = 0f,
+                mediaPipeTimeMs = 0.0,
+                onnxTimeMs = 0.0,
+                totalTimeMs = 0.0
             )
         }
     }

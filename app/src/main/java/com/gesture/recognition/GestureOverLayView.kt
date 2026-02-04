@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.*
 import android.util.AttributeSet
 import android.util.Log
+import android.view.MotionEvent
 import android.view.View
 
 /**
@@ -48,6 +49,21 @@ class GestureOverlayView @JvmOverloads constructor(
     private var cachedOffsetX = 0f
     private var cachedOffsetY = 0f
     private var cacheValid = false
+
+    // PERFORMANCE MONITORING - Debug panel
+    private var showDebugPanel = false
+    private var lastTapTime = 0L
+    private var tapCount = 0
+
+    // Timing data
+    private var mediaPipeMs = 0.0
+    private var onnxMs = 0.0
+    private var totalMs = 0.0
+
+    // Expected performance targets
+    private val expectedMediaPipeMs = 10.0  // GPU target
+    private val expectedOnnxMs = 8.0        // NPU target
+    private val expectedTotalMs = 40.0      // Combined target
 
     // Thread safety - create copy before drawing
     private val landmarksLock = Any()
@@ -139,6 +155,11 @@ class GestureOverlayView @JvmOverloads constructor(
             this.rotation = rotation
             this.mirrorHorizontal = mirrorHorizontal
 
+            // Extract timing data from result for performance monitoring
+            this.mediaPipeMs = result?.mediaPipeTimeMs ?: 0.0
+            this.onnxMs = result?.onnxTimeMs ?: 0.0
+            this.totalMs = result?.totalTimeMs ?: 0.0
+
             // PRE-COMPUTE display coordinates (do heavy math here, not in onDraw!)
             this.displayPoints = if (landmarks != null && landmarks.size == 63) {
                 preComputeDisplayPoints(landmarks, imageWidth, imageHeight, rotation, mirrorHorizontal)
@@ -229,6 +250,7 @@ class GestureOverlayView @JvmOverloads constructor(
             // Draw in order: back to front
             drawHandSkeleton(canvas)
             drawTopPanel(canvas)
+            drawDebugPanel(canvas)  // ← Performance monitoring panel
             drawProbabilityPanel(canvas)
             drawBottomInstructions(canvas)
         } catch (e: Exception) {
@@ -447,6 +469,115 @@ class GestureOverlayView @JvmOverloads constructor(
     }
 
     /**
+     * Draw performance debug panel (toggleable with triple-tap)
+     * Shows MediaPipe, ONNX timing and hardware status
+     */
+    private fun drawDebugPanel(canvas: Canvas) {
+        if (!showDebugPanel) return
+
+        val panelX = 40f
+        val panelY = 180f
+        val panelWidth = width - 80f
+        val panelHeight = 400f
+
+        // Semi-transparent background
+        backgroundPaint.alpha = 230
+        canvas.drawRoundRect(
+            panelX, panelY,
+            panelX + panelWidth, panelY + panelHeight,
+            20f, 20f, backgroundPaint
+        )
+
+        // Title
+        textPaint.color = Color.WHITE
+        textPaint.textSize = 36f
+        canvas.drawText("PERFORMANCE MONITOR", panelX + 20f, panelY + 50f, textPaint)
+
+        smallTextPaint.color = Color.GRAY
+        smallTextPaint.textSize = 24f
+        canvas.drawText("Triple-tap to hide", panelX + 20f, panelY + 80f, smallTextPaint)
+
+        var yPos = panelY + 130f
+
+        // MediaPipe timing with color coding
+        val mpColor = if (mediaPipeMs <= expectedMediaPipeMs * 1.5) Color.GREEN else Color.RED
+        val mpStatus = if (mediaPipeMs <= expectedMediaPipeMs * 1.5) "✓ GPU" else "✗ CPU"
+
+        smallTextPaint.color = Color.WHITE
+        smallTextPaint.textSize = 28f
+        canvas.drawText("MediaPipe:", panelX + 20f, yPos, smallTextPaint)
+
+        textPaint.color = mpColor
+        textPaint.textSize = 32f
+        canvas.drawText(String.format("%.1fms", mediaPipeMs), panelX + 200f, yPos, textPaint)
+
+        smallTextPaint.color = mpColor
+        canvas.drawText(mpStatus, panelX + 320f, yPos, smallTextPaint)
+
+        yPos += 35f
+        tinyTextPaint.color = Color.GRAY
+        tinyTextPaint.textSize = 22f
+        canvas.drawText(String.format("Target: %.0fms (GPU)", expectedMediaPipeMs), panelX + 40f, yPos, tinyTextPaint)
+
+        yPos += 50f
+
+        // ONNX timing with color coding
+        val onnxColor = if (onnxMs <= expectedOnnxMs * 1.5) Color.GREEN else Color.RED
+        val onnxStatus = if (onnxMs <= expectedOnnxMs * 1.5) "✓ NPU" else "✗ CPU"
+
+        smallTextPaint.color = Color.WHITE
+        canvas.drawText("ONNX:", panelX + 20f, yPos, smallTextPaint)
+
+        textPaint.color = onnxColor
+        canvas.drawText(String.format("%.1fms", onnxMs), panelX + 200f, yPos, textPaint)
+
+        smallTextPaint.color = onnxColor
+        canvas.drawText(onnxStatus, panelX + 320f, yPos, smallTextPaint)
+
+        yPos += 35f
+        tinyTextPaint.color = Color.GRAY
+        canvas.drawText(String.format("Target: %.0fms (NPU)", expectedOnnxMs), panelX + 40f, yPos, tinyTextPaint)
+
+        yPos += 50f
+
+        // Total timing
+        val totalColor = if (totalMs <= expectedTotalMs * 1.5) Color.GREEN else Color.RED
+
+        smallTextPaint.color = Color.WHITE
+        canvas.drawText("Total:", panelX + 20f, yPos, smallTextPaint)
+
+        textPaint.color = totalColor
+        canvas.drawText(String.format("%.1fms", totalMs), panelX + 200f, yPos, textPaint)
+
+        yPos += 35f
+        tinyTextPaint.color = Color.GRAY
+        canvas.drawText(String.format("Target: %.0fms", expectedTotalMs), panelX + 40f, yPos, tinyTextPaint)
+
+        yPos += 50f
+
+        // Hardware status summary
+        smallTextPaint.color = Color.WHITE
+        smallTextPaint.textSize = 28f
+        canvas.drawText("Hardware Status:", panelX + 20f, yPos, smallTextPaint)
+
+        yPos += 40f
+        val gpuWorking = mediaPipeMs <= expectedMediaPipeMs * 1.5
+        smallTextPaint.color = if (gpuWorking) Color.GREEN else Color.RED
+        canvas.drawText(
+            if (gpuWorking) "• GPU: Enabled ✓" else "• GPU: CPU Fallback ✗",
+            panelX + 40f, yPos, smallTextPaint
+        )
+
+        yPos += 35f
+        val npuWorking = onnxMs <= expectedOnnxMs * 1.5
+        smallTextPaint.color = if (npuWorking) Color.GREEN else Color.RED
+        canvas.drawText(
+            if (npuWorking) "• NPU: Enabled ✓" else "• NPU: CPU Backend ✗",
+            panelX + 40f, yPos, smallTextPaint
+        )
+    }
+
+    /**
      * Draw bottom instructions
      */
     private fun drawBottomInstructions(canvas: Canvas) {
@@ -462,5 +593,30 @@ class GestureOverlayView @JvmOverloads constructor(
         super.onSizeChanged(w, h, oldw, oldh)
         cacheValid = false  // Force recalculation of scale/offset
         Log.d(TAG, "View resized: ${w}×${h}, cache invalidated")
+    }
+
+    /**
+     * Handle touch events for debug panel toggle (triple-tap)
+     */
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (event.action == MotionEvent.ACTION_DOWN) {
+            val currentTime = System.currentTimeMillis()
+
+            // Triple-tap detection (within 300ms)
+            if (currentTime - lastTapTime < 300) {
+                tapCount++
+                if (tapCount >= 2) {  // Third tap
+                    showDebugPanel = !showDebugPanel
+                    Log.d(TAG, "Debug panel: ${if (showDebugPanel) "SHOWN" else "HIDDEN"}")
+                    postInvalidate()
+                    tapCount = 0
+                }
+            } else {
+                tapCount = 0
+            }
+
+            lastTapTime = currentTime
+        }
+        return true
     }
 }

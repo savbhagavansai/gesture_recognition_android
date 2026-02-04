@@ -1,8 +1,8 @@
 package com.gesture.recognition
 
 /**
- * Result of gesture recognition
- * Contains gesture name, confidence, and all class probabilities
+ * Result of gesture recognition with performance timing data
+ * Contains gesture name, confidence, probabilities, and detailed timing breakdown
  */
 data class GestureResult(
     val gesture: String,
@@ -10,7 +10,11 @@ data class GestureResult(
     val allProbabilities: FloatArray,
     val handDetected: Boolean = true,
     val bufferProgress: Float = 1f,
-    val isStable: Boolean = false
+    val isStable: Boolean = false,
+    // Performance timing (in milliseconds)
+    val mediaPipeTimeMs: Double = 0.0,
+    val onnxTimeMs: Double = 0.0,
+    val totalTimeMs: Double = 0.0
 ) {
     /**
      * Check if prediction meets confidence threshold
@@ -38,6 +42,7 @@ data class GestureResult(
         if (handDetected != other.handDetected) return false
         if (bufferProgress != other.bufferProgress) return false
         if (isStable != other.isStable) return false
+        // Timing fields not compared (vary frame to frame)
 
         return true
     }
@@ -49,6 +54,7 @@ data class GestureResult(
         result = 31 * result + handDetected.hashCode()
         result = 31 * result + bufferProgress.hashCode()
         result = 31 * result + isStable.hashCode()
+        // Timing fields not included in hash (vary frame to frame)
         return result
     }
 }
